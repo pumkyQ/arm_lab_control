@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<robot name="virtual_finger">
+<robot name="real_3axis_finger_135">
   <!-- Base Link -->
   <link name="base_link">
     <visual>
@@ -8,7 +8,7 @@
     </visual>
   </link>
 
-  <!-- Link 1 & Joint 1 -->
+  <!-- Joint 1 (Node 1, Axis 1) - 뿌리 관절 -->
   <joint name="joint1" type="revolute">
     <parent link="base_link"/>
     <child link="link1"/>
@@ -24,8 +24,8 @@
     </visual>
   </link>
 
-  <!-- Link 2 & Joint 2 -->
-  <joint name="joint2" type="revolute">
+  <!-- Joint 3 (Node 2, Axis 1) - 중간 관절 -->
+  <joint name="joint3" type="revolute">
     <parent link="link1"/>
     <child link="link2"/>
     <origin xyz="0 0 0.1" rpy="0 0 0"/>
@@ -40,8 +40,8 @@
     </visual>
   </link>
 
-  <!-- Link 3 & Joint 3 -->
-  <joint name="joint3" type="revolute">
+  <!-- Joint 5 (Node 3, Axis 1) - 끝마디 관절 -->
+  <joint name="joint5" type="revolute">
     <parent link="link2"/>
     <child link="link3"/>
     <origin xyz="0 0 0.08" rpy="0 0 0"/>
@@ -52,38 +52,6 @@
     <visual>
       <origin xyz="0 0 0.03" rpy="0 0 0"/>
       <geometry><cylinder radius="0.016" length="0.06"/></geometry>
-      <material name="white"/>
-    </visual>
-  </link>
-
-  <!-- Link 4 & Joint 4 -->
-  <joint name="joint4" type="revolute">
-    <parent link="link3"/>
-    <child link="link4"/>
-    <origin xyz="0 0 0.06" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="-1.57" upper="1.57" effort="10" velocity="3.0"/>
-  </joint>
-  <link name="link4">
-    <visual>
-      <origin xyz="0 0 0.025" rpy="0 0 0"/>
-      <geometry><cylinder radius="0.014" length="0.05"/></geometry>
-      <material name="white"/>
-    </visual>
-  </link>
-
-  <!-- Link 5 & Joint 5 -->
-  <joint name="joint5" type="revolute">
-    <parent link="link4"/>
-    <child link="link5"/>
-    <origin xyz="0 0 0.05" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="-1.57" upper="1.57" effort="10" velocity="3.0"/>
-  </joint>
-  <link name="link5">
-    <visual>
-      <origin xyz="0 0 0.02" rpy="0 0 0"/>
-      <geometry><cylinder radius="0.012" length="0.04"/></geometry>
       <material name="white"/>
     </visual>
   </link>
