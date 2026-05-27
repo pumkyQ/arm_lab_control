@@ -20,17 +20,18 @@ class VirtualWelconDriver(Node):
         )
         
         # 2. 로봇 상태 변수 정의 (5자유도)
-        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5']
-        self.positions = [0.0] * 5
-        self.velocities = [0.0] * 5
-        self.voltages = [0.0] * 5         # 현재 모터 인가 전압 (mV)
-        self.target_positions = [0.0] * 5  # 목표 각도 (Radian)
+        self.joint_names = ['joint1', 'joint3', 'joint5']
+        self.positions = [0.0] * 3
+        self.velocities = [0.0] * 3
+        self.voltages = [0.0] * 3         # 현재 모터 인가 전압 (mV)
+        self.target_positions = [0.0] * 3  # 목표 각도 (Radian)
         
         # 3. PD 제어 게인 (Gain) 설정 (시뮬레이션 물리 특성에 맞춤)
-        self.Kp = 25000.0   # 비례 게인 (오차가 클수록 전압을 세게 줌)
-        self.Kd = 1500.0    # 미분 게인 (속도가 빠르면 댐핑을 주어 오버슈트 방지)
+        self.Kp = 15000.0   # 비례 게인
+        self.Kd = 800.0     # 미분 게인
         self.voltage_limit = 10000.0  # 웰콘 드라이버 최대 전압 제한 (±10V)
 
+        self.log_counter = 0 # 터미널 출력 주절용 카운터
         # 4. 가상 CAN 버스 (vcan0) 연결
         try:
             self.bus = can.interface.Bus(channel='vcan0', bustype='socketcan')
@@ -87,22 +88,18 @@ class VirtualWelconDriver(Node):
         """PD 제어 연산 및 모터 물리 상태 업데이트 루프 (50Hz)"""
         dt = 0.02 # 20ms
         
-        for i in range(5):
+        for i in range(len(self.joint_names)):
             # 1. PD 제어기 (위치 제어 루프)
-            # 외부 SDO 전압 입력이 없을 때(0일 때)만 PD 제어기가 작동하도록 설정
             error = self.target_positions[i] - self.positions[i]
-            
-            # PD 제어 공식 계산 (Kp * error - Kd * velocity)
             pd_voltage = (self.Kp * error) - (self.Kd * self.velocities[i])
             
-            # 전압 제한 (±10,000 mV)
             self.voltages[i] = max(-self.voltage_limit, min(self.voltage_limit, pd_voltage))
 
             # 2. 가상 물리 법칙 연산 (전압 -> 속도 -> 각도)
-            # 가속도 = 전압에 비례
-            acceleration = self.voltages[i] * 0.0001
+            # 가속도 계수를 0.0001에서 0.01로 높여 움직임을 시각화
+            acceleration = self.voltages[i] * 0.01
             self.velocities[i] += acceleration * dt
-            self.velocities[i] *= 0.85  # 자연스러운 마찰 댐핑 효과
+            self.velocities[i] *= 0.7   # 마찰 댐핑 강화 (떨림 방지)
             
             # 각도 업데이트
             self.positions[i] += self.velocities[i] * dt
@@ -114,6 +111,13 @@ class VirtualWelconDriver(Node):
             elif self.positions[i] < -1.57:
                 self.positions[i] = -1.57
                 self.velocities[i] = 0.0
+
+        # 2.5 터미널에 현재 각도 출력 (약 5Hz 주기로 출력)
+        self.log_counter += 1
+        if self.log_counter % 10 == 0:
+            pos_str = ", ".join([f"{name}: {pos:.3f}" for name, pos in zip(self.joint_names, self.positions)])
+            self.get_logger().info(f"[Virtual] Current Angles (rad) -> {pos_str}")
+            self.log_counter = 0
 
         # 3. RViz2 시각화를 위해 최종 조인트 각도 발행
         msg = JointState()
