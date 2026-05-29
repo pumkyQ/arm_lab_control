@@ -31,19 +31,24 @@ class RealWelconPositionDriver(Node):
         # 2.1 조인트 오프셋 설정 (Calibration 값 반영)
         # 로봇을 일자로 폈을 때 터미널 로그의 'C' 값을 여기에 입력하세요.
         # 여기에 Raw 값을 넣으면, Current Position(C)이 0.0으로 정렬됩니다.
-        self.joint_offsets = [-0.010, 0.007, -0.003]
+        # -955/740 = -1.2905, -337/740 = -0.4554
+        self.joint_offsets = [-1.2905, 0.0, -0.4554]
         self.raw_positions = [0.0] * 3 # 오프셋 적용 전 값 모니터링용
 
+        # 2.2 조인트 방향 설정 (1.0: 정방향, -1.0: 역방향)
+        # RViz에서 로봇이 반대로 움직인다면 해당 조인트를 -1.0으로 바꾸세요.
+        self.joint_directions = [1.0, 1.0, 1.0]
+
         # 2.2 조인트 안전 한계 설정 (단위: Radian, 예: -1.57 ~ 1.57)
-        self.joint_min_limits = [-1.57, -1.57, -1.57]
-        self.joint_max_limits = [1.57, 1.57, 1.57]
+        self.joint_min_limits = [-0.5, -1.57, -1.57]
+        self.joint_max_limits = [0.425, 1.57, 1.57]
 
         # Node ID 매핑 (Joint 1: Node 1, Joint 3: Node 2, Joint 5: Node 3)
         self.node_to_idx = {1: 0, 2: 1, 3: 2}
 
         # 3. 하드웨어 상수 및 제어 게인 설정
-        self.COUNTS_PER_RADIAN = 100000.0  
-        self.VELOCITY_COUNTS_PER_RADIAN = 100000.0 
+        self.COUNTS_PER_RADIAN = 740.0  
+        self.VELOCITY_COUNTS_PER_RADIAN = 740.0 
 
         # 역기전력 계수 (Back-EMF)
         GEAR_RATIO = 406.4
@@ -132,7 +137,8 @@ class RealWelconPositionDriver(Node):
                 if sdo_res.index in [0x6064, 0x6864]:
                     raw_pos = (val / self.COUNTS_PER_RADIAN)
                     self.raw_positions[idx] = raw_pos
-                    self.current_positions[idx] = raw_pos - self.joint_offsets[idx]
+                    # 방향과 오프셋을 적용하여 실제 각도 계산
+                    self.current_positions[idx] = (raw_pos - self.joint_offsets[idx]) * self.joint_directions[idx]
                 # 속도 데이터 업데이트 (이 부분이 있어야 Kd 제어가 작동함)
                 elif sdo_res.index in [0x606c, 0x686c]:
                     if val > 0x7FFFFFFF: val -= 0x100000000

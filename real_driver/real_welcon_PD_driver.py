@@ -28,16 +28,22 @@ class RealWelconPDDriver(Node):
         self.actual_currents = [0.0] * 3  # 실제 흐르는 전류 모니터링 (mA)
         self.error_integral = [0.0] * 3  # I 제어를 위한 오차 누적분
         self.status_words = [0] * 3       # 드라이버 상태 모니터링용
+        self.raw_positions = [0.0] * 3    # 엔코더 원시 값 저장 변수 추가
+
+        # 자동 정렬 모드 플래그 및 목표치 (Raw Count 기준)
+        self.alignment_complete = True    # 사용자 요청에 따라 일단 True로 설정하여 GUI 제어 우선
+        self.align_targets_raw = [-955.0, 0.0, -337.0] 
         
         # 2.1 조인트 오프셋 설정 (Calibration)
-        self.joint_offsets = [-0.010, 0.007, -0.005]
+        # -955/740 = -1.2905, -337/740 = -0.4554
+        self.joint_offsets = [-1.2905, 0.0, -0.4554]
 
         # Node ID 매핑 (Joint 1: Node 1, Joint 3: Node 2, Joint 5: Node 3)
         self.node_to_idx = {1: 0, 2: 1, 3: 2}
 
         # 3. 하드웨어 상수 설정
-        self.COUNTS_PER_RADIAN = 100000.0  
-        self.VELOCITY_COUNTS_PER_RADIAN = 100000.0 
+        self.COUNTS_PER_RADIAN = 740.0  
+        self.VELOCITY_COUNTS_PER_RADIAN = 740.0 
 
         # [FAULHABER 1506N012SR 및 기어비 기반 파라미터]
         # KE = 0.904 mV/rpm -> 0.008632 V/(rad/s)
@@ -45,15 +51,15 @@ class RealWelconPDDriver(Node):
         self.K_emf = 8.632 * GEAR_RATIO  # 약 3508.0 mV/(rad/s)
         
         # 4. 제어 게인 및 안전 제한값
-        # 각 조인트의 하중에 따른 차등 게인 설정 (0: joint1, 1: joint3, 2: joint5)
-        self.Kp_list = [25000.0, 20000.0, 15000.0]        # 조인트 3 비례 게인 하향
-        self.Ki_list = [400.0, 300.0, 200.0]             # 조인트 3 적분 게인 대폭 하향
-        self.Kd_list = [800.0, 1000.0, 500.0]
-        self.stiction_offset_list = [6000.0, 5000.0, 4800.0] # 조인트 3 초기 밀어주는 힘 완화
-        self.i_limit = 2500.0                             # I항 최대 누적 제한 (mV)
+        # 조인트 3(index 1)은 고장이므로 모든 게인을 0으로 설정하여 보호
+        self.Kp_list = [30000.0, 0.0, 20000.0]
+        self.Ki_list = [400.0, 0.0, 300.0]
+        self.Kd_list = [3000.0, 0.0, 1800.0]
+        self.stiction_offset_list = [5500.0, 0.0, 2500.0]
+        self.i_limit = 1200.0                             # I항 최대 누적 제한 (mV)
 
-        self.voltage_limit = 7500.0     # 하드웨어 보호를 위해 전체 전압 한계를 7.5V로 제한
-        self.ERROR_THRESH = 0.002        # 데드밴드 정밀화
+        self.voltage_limit = 8000.0     # 안전 한계 8V
+        self.ERROR_THRESH = 0.005        # 오실레이션 방지를 위해 데드밴드 소폭 확대
 
         # 5. Welcon 및 CAN 설정
         self.protocol = Cia402Protocol()
@@ -134,6 +140,7 @@ class RealWelconPDDriver(Node):
                 if val > 0x7FFFFFFF: val -= 0x100000000
 
                 if sdo_res.index in [0x6064, 0x6864]:
+                    self.raw_positions[idx] = val
                     self.current_positions[idx] = (val / self.COUNTS_PER_RADIAN) - self.joint_offsets[idx]
                 elif sdo_res.index in [0x606c, 0x686c]:
                     if val > 0x7FFFFFFF: val -= 0x100000000
@@ -151,21 +158,31 @@ class RealWelconPDDriver(Node):
         dt = 0.02
         
         for i, (node_id, axis) in enumerate(self.real_axes):
+            # 조인트 3 (Node 2) 고장 보호: 전압 인가 원천 차단
+            if node_id == 2:
+                self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(node_id, 0, axis))
+                self.applied_voltages[i] = 0.0
+                continue
+
             # --- 자동 상태 복구 로직 ---
             # Statusword의 비트 3(Fault)이 1이거나, Operation Enabled 상태가 아니면 다시 활성화 시도
             status = self.status_words[i]
             if (status & 0x08) or not (status & 0x04):
-                # 하드웨어 보호를 위해 Fault 발생 시 즉시 전압 0 전송 후 복구 시도
-                self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(node_id, 0, axis))
-                if self.log_counter % 50 == 0:
-                    self.get_logger().warn(f"Joint {node_id} Fault! Check Hardware. (Stat: {hex(status)})")
-                # 재활성화 시도 (필요 시)
-                # self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.FAULT_RESET))
-                # self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.ENABLE_OPERATION))
+                if self.log_counter % 10 == 0:
+                    self.get_logger().warn(f"Joint {node_id} Fault or Disabled (Stat: {hex(status)}). Re-enabling...")
+                self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.FAULT_RESET))
+                self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.ENABLE_OPERATION))
                 continue
 
-            # 1. 에러 계산
-            error = self.target_positions[i] - self.current_positions[i]
+            # 1. 목표값 선택 (정렬 완료 플래그에 따라 결정)
+            if not self.alignment_complete:
+                target = self.align_targets_raw[i] / self.COUNTS_PER_RADIAN
+                current = self.raw_positions[i]
+            else:
+                target = self.target_positions[i]
+                current = self.current_positions[i]
+
+            error = target - current
             
             # 2. PID 피드백 계산
             v_pd = (self.Kp_list[i] * error) - (self.Kd_list[i] * self.current_velocities[i])
@@ -177,8 +194,14 @@ class RealWelconPDDriver(Node):
             if abs(error) > self.ERROR_THRESH:
                 # I항 계산 및 Anti-windup
                 self.error_integral[i] += error * dt
-                self.error_integral[i] = max(-self.i_limit/self.Ki_list[i], min(self.i_limit/self.Ki_list[i], self.error_integral[i]))
-                v_i = self.Ki_list[i] * self.error_integral[i]
+                
+                # ZeroDivisionError 방지: Ki가 0보다 클 때만 적분 제한 및 연산 수행
+                if self.Ki_list[i] > 0:
+                    i_limit_val = self.i_limit / self.Ki_list[i]
+                    self.error_integral[i] = max(-i_limit_val, min(i_limit_val, self.error_integral[i]))
+                    v_i = self.Ki_list[i] * self.error_integral[i]
+                else:
+                    v_i = 0.0
 
                 v_stiction = self.stiction_offset_list[i] * np.sign(error)
                 total_voltage = v_pd + v_i + v_emf + v_stiction
@@ -201,7 +224,7 @@ class RealWelconPDDriver(Node):
         # 로깅 및 ROS2 메시지 발행
         self.log_counter += 1
         if self.log_counter % 10 == 0:
-            pos_str = ", ".join([f"{n}: {p:.3f}" for n, p in zip(self.joint_names, self.current_positions)])
+            pos_str = ", ".join([f"{n}: {p:.3f} (Raw: {int(r)})" for n, p, r in zip(self.joint_names, self.current_positions, self.raw_positions)])
             volt_str = ", ".join([f"{n}: {v:.0f}mV" for n, v in zip(self.joint_names, self.applied_voltages)])
             stat_str = ", ".join([f"{n}: {hex(s)}" for n, s in zip(self.joint_names, self.status_words)])
             curr_str = ", ".join([f"{n}: {c:.0f}" for n, c in zip(self.joint_names, self.actual_currents)])
