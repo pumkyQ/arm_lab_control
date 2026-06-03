@@ -29,6 +29,8 @@ def main():
     CAN_CHANNEL = "can0"
     MONITOR_INTERVAL = 0.05 # 약 20Hz
     voltage_step = 500      # +/- 키 입력 시 변화할 전압량 (mV)
+    CURRENT_SAFETY_LIMIT_MA = 1000  # 1A 이상 흐르면 즉시 차단 (소형 모터 보호용)
+    STALL_CHECK_THRESHOLD_MV = 2000 # 2V 이상인데 안 움직이면 Stall로 간주
     # -------------------------------------------------------------------------
 
     protocol = Cia402Protocol()
@@ -69,6 +71,7 @@ def main():
 
         # 데이터 저장소
         encoder_values = {1: 0, 2: 0, 3: 0}
+        last_encoder_values = {1: 0, 2: 0, 3: 0}
         current_status = 0
         current_error_reg = 0
         actual_currents = {1: 0, 2: 0, 3: 0}
@@ -91,10 +94,15 @@ def main():
                     elif key in ['1', '2', '3']:
                         current_test_node = int(key)
                         test_voltage = 0 # 노드 변경 시 안전을 위해 전압 초기화
+                    elif key == 'r':
+                        # 현재 테스트 중인 노드에 Fault Reset 명령 송신
+                        print(f"\n [Reset] Node {current_test_node} 에러 리셋 시도...")
+                        bus.send(protocol.make_axis_controlword_sdo(current_test_node, 1, Cia402Controlword.FAULT_RESET))
+                        time.sleep(0.1)
                         # 줄바꿈 없이 위쪽 라인에 정보를 갱신하기 위해 로그 출력 방식 변경 필요
                     
-                    # 안전을 위해 최대 전압 8V 제한
-                    test_voltage = max(-8000, min(8000, test_voltage))
+                    # 안전을 위해 최대 전압 9V 제한
+                    test_voltage = max(-9000, min(9000, test_voltage))
 
                 # 1. 각 노드에 위치 및 전류 요청, 현재 테스트 노드 상세 상태 요청
                 for node_id in TARGET_NODES:
@@ -110,6 +118,7 @@ def main():
                 # 2. CAN 버스에서 응답 수집
                 timeout_end = time.monotonic() + 0.03
                 while time.monotonic() < timeout_end:
+                    last_encoder_values = encoder_values.copy()
                     frame = bus.recv(timeout=0.001)
                     if frame is None: continue
 
@@ -127,12 +136,26 @@ def main():
                                     # 16비트 부호 있는 정수(Integer16) 처리
                                     if val > 0x7FFF: val -= 0x10000
                                     actual_currents[node_id] = val
+                                    
+                                    # [안전 장치] 과전류 감지 시 전압 즉시 차단
+                                    if abs(val) > CURRENT_SAFETY_LIMIT_MA:
+                                        test_voltage = 0
+                                        bus.send(protocol.make_q_axis_voltage_mv_sdo(node_id, 0, 1))
+                                        print(f"\n 🔥 [위험] Node {node_id} 과전류 감지({val}mA)! 전압을 강제 차단했습니다.")
+                                        print(" 기구부 고착이나 Stall 상태를 확인하십시오.")
                                 
                                 if node_id == current_test_node:
                                     if sdo_res.index == 0x6041:
                                         current_status = val
                                     elif sdo_res.index == 0x603F:
                                         current_error_reg = val
+
+                # [Stall 감지 로직] 전압은 들어가는데 엔코더 변화가 없는 경우
+                if abs(test_voltage) > STALL_CHECK_THRESHOLD_MV and \
+                   abs(actual_currents[current_test_node]) > 50:
+                    if last_encoder_values[current_test_node] == encoder_values[current_test_node]:
+                         sys.stdout.write(f"\n ⚠️ [STALL WARNING] Node {current_test_node} 가 물리적으로 막혀있을 가능성이 큼! \n")
+                         sys.stdout.flush()
 
                 # 3. 화면 출력
                 # Statusword 해석

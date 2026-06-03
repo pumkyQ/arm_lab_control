@@ -58,6 +58,7 @@ class RealWelconPDDriver(Node):
         self.stiction_offset_list = [5500.0, 0.0, 2500.0]
         self.i_limit = 1200.0                             # I항 최대 누적 제한 (mV)
 
+        self.CURRENT_LIMIT_MA = 800.0    # 800mA 이상 시 보호를 위해 차단
         self.voltage_limit = 8000.0     # 안전 한계 8V
         self.ERROR_THRESH = 0.005        # 오실레이션 방지를 위해 데드밴드 소폭 확대
 
@@ -117,7 +118,7 @@ class RealWelconPDDriver(Node):
             self.bus.send(self.protocol.make_sdo_read(node_id, Cia402Object(curr_idx)))
 
         # SDO 응답을 충분히 기다려 데이터 누락 방지
-        timeout_end = time.monotonic() + 0.010
+        timeout_end = time.monotonic() + 0.020
         while time.monotonic() < timeout_end:
             frame = self.bus.recv(timeout=0.001)
             if frame is None:
@@ -168,9 +169,18 @@ class RealWelconPDDriver(Node):
             # Statusword의 비트 3(Fault)이 1이거나, Operation Enabled 상태가 아니면 다시 활성화 시도
             status = self.status_words[i]
             if (status & 0x08) or not (status & 0x04):
+            if (status & 0x08): # Fault 상태인 경우
                 if self.log_counter % 10 == 0:
                     self.get_logger().warn(f"Joint {node_id} Fault or Disabled (Stat: {hex(status)}). Re-enabling...")
+                    self.get_logger().warn(f"Joint {node_id} FAULT (Stat: {hex(status)}). Resetting...")
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.FAULT_RESET))
+                continue
+            elif not (status & 0x04): # Operation Enabled가 아닌 경우
+                if self.log_counter % 10 == 0:
+                    self.get_logger().warn(f"Joint {node_id} Disabled (Stat: {hex(status)}). Enabling...")
+                # Shutdown(0x06) -> Switch On(0x07) -> Enable Operation(0x0F) 순차 실행 필요 시
+                self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.SHUTDOWN))
+                self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.SWITCH_ON))
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.ENABLE_OPERATION))
                 continue
 

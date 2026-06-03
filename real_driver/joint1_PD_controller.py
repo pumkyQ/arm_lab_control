@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.append(os.path.join(parent_dir, "kitech_v1"))
 
 from motor_control.can_bus import SocketCanBus
-from motor_control.cia402 import Cia402Protocol, Cia402Object
+from motor_control.cia402 import Cia402Protocol, Cia402Object, Cia402Controlword
 
 def kbhit():
     """터미널 키보드 입력 여부를 비동기 체크하는 헬퍼 함수"""
@@ -64,6 +64,18 @@ def main():
         nmt_frame = protocol.make_nmt_start(0)
         bus.send(nmt_frame)
         time.sleep(0.1)
+
+        # [추가] 하드웨어 활성화: 전압 모드 설정 및 Operation Enabled 상태 전환
+        print(f" ▶ Node {TARGET_NODE_ID} 활성화 시도 중...")
+        # 1. 운전 모드 설정 (Voltage Mode: -11)
+        bus.send(protocol.make_axis_mode_sdo(TARGET_NODE_ID, TARGET_AXIS, -11))
+        time.sleep(0.05)
+
+        # 2. CiA402 상태 기기 전환 (Fault Reset -> Shutdown -> Switch On -> Enable)
+        for ctrl in [Cia402Controlword.FAULT_RESET, Cia402Controlword.SHUTDOWN, 
+                     Cia402Controlword.SWITCH_ON, Cia402Controlword.ENABLE_OPERATION]:
+            bus.send(protocol.make_axis_controlword_sdo(TARGET_NODE_ID, TARGET_AXIS, ctrl))
+            time.sleep(0.03)
 
         print(f"\n⏳ [Booting] Node {TARGET_NODE_ID}의 현재 절대 엔코더 값을 확인 중...")
         pos_obj = Cia402Object(0x6064)
