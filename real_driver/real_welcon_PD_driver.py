@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float64MultiArray
 import sys
 import os
 import time
@@ -18,6 +19,7 @@ class RealWelconPDDriver(Node):
         # 1. ROS2 설정 (실제 조인트 1, 3, 5만 사용)
         self.target_sub = self.create_subscription(JointState, 'target_joints', self.target_callback, 10)
         self.joint_pub = self.create_publisher(JointState, 'joint_states', 10)
+        self.perf_pub = self.create_publisher(Float64MultiArray, '/joint_performance', 10)
         
         # 2. 제어 변수 정의
         self.joint_names = ['joint1', 'joint3', 'joint5']
@@ -158,6 +160,8 @@ class RealWelconPDDriver(Node):
         self.update_encoder_feedback()
         dt = 0.02
         
+        perf_data = [] # PlotJuggler용 통합 데이터 리스트
+        
         for i, (node_id, axis) in enumerate(self.real_axes):
             # 조인트 3 (Node 2) 고장 보호: 전압 인가 원천 차단
             if node_id == 2:
@@ -168,7 +172,6 @@ class RealWelconPDDriver(Node):
             # --- 자동 상태 복구 로직 ---
             # Statusword의 비트 3(Fault)이 1이거나, Operation Enabled 상태가 아니면 다시 활성화 시도
             status = self.status_words[i]
-            if (status & 0x08) or not (status & 0x04):
             if (status & 0x08): # Fault 상태인 경우
                 if self.log_counter % 10 == 0:
                     self.get_logger().warn(f"Joint {node_id} Fault or Disabled (Stat: {hex(status)}). Re-enabling...")
@@ -230,6 +233,12 @@ class RealWelconPDDriver(Node):
                 axis=axis
             )
             self.bus.send(volt_frame)
+            
+            # 성능 지표 데이터 수집 (Target, Actual, Error, Voltage)
+            perf_data.extend([target, current, error, clamped_voltage])
+
+        # 성능 지표 토픽 발행
+        self.publish_performance(perf_data)
 
         # 로깅 및 ROS2 메시지 발행
         self.log_counter += 1
@@ -248,6 +257,13 @@ class RealWelconPDDriver(Node):
         msg.velocity = self.current_velocities
         msg.effort = self.applied_voltages  # 전압값을 effort 필드에 할당하여 모니터링 가능하게 함
         self.joint_pub.publish(msg)
+
+    def publish_performance(self, data_list):
+        """PlotJuggler에서 쉽게 확인하기 위해 리스트 데이터를 MultiArray로 발행"""
+        if not data_list: return
+        msg = Float64MultiArray()
+        msg.data = data_list
+        self.perf_pub.publish(msg)
 
     def destroy_node(self):
         self.get_logger().info("Stopping motors...")
