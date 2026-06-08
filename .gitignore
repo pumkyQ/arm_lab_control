@@ -1,2 +1,15 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# ROS 2 build artifacts
+build/
+install/
+log/
+
+# Project specific logs
+real_driver/log_data/
+*.csv
+*.log
+.vscode/
