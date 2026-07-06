@@ -50,10 +50,11 @@ def main():
     # We set goals around/inside the ball to pinch or touch it.
     # Set goals slightly inside the box boundary to squeeze it
     # Squeezing the static pillar (base center at [0, 0, 0.04], box size x/y is 5cm, height is 8cm)
+    # Squeezing the dynamic elevated pillar (box size x/y is 3cm, height is 6cm, center at z=0.11)
     goals = np.array([
-        [0.0, -0.015, 0.05],  # FFtip goal (squeezing in from front)
-        [0.015, 0.010, 0.05],  # MFtip goal (squeezing in from back-right)
-        [-0.015, 0.010, 0.05]  # THtip goal (squeezing in from back-left)
+        [0.0, -0.010, 0.11],  # FFtip goal (squeezing in from front)
+        [0.010, 0.007, 0.11],  # MFtip goal (squeezing in from back-right)
+        [-0.010, 0.007, 0.11]  # THtip goal (squeezing in from back-left)
     ])
     
     # 5. Controller Gains and Impedance Parameters
@@ -89,10 +90,11 @@ def main():
     print("Close the viewer window to view performance plots.")
     print("Press Ctrl+C in the terminal to exit.\n")
     
-    # Control settings for manual interaction
+    # Control settings for manual interaction (Default to TRUE for live interactive demonstration)
     control_settings = {
         "use_impedance_control": True,
-        "interactive_mode": False
+        "interactive_mode": True,
+        "z_target": 0.11
     }
     
     def key_callback(keycode):
@@ -100,9 +102,14 @@ def main():
             key_char = chr(keycode).lower()
             if key_char == 'm':
                 control_settings["use_impedance_control"] = not control_settings["use_impedance_control"]
-                control_settings["interactive_mode"] = True
                 mode_str = "Impedance Control" if control_settings["use_impedance_control"] else "Cartesian PD Control"
-                print(f"\n>>> [MANUAL MODE] Control mode toggled to: {mode_str} <<<\n")
+                print(f"\n>>> [KEYPRESS] 'M' pressed. Active Control Mode: {mode_str} <<<")
+            elif key_char == 'u':
+                control_settings["z_target"] = 0.17
+                print(f"\n>>> [KEYPRESS] 'U' pressed. Command: Lift Up Target (z -> 0.17m) <<<")
+            elif key_char == 'd':
+                control_settings["z_target"] = 0.11
+                print(f"\n>>> [KEYPRESS] 'D' pressed. Command: Lower Down Target (z -> 0.11m) <<<")
         except ValueError:
             pass
 
@@ -140,25 +147,24 @@ def main():
             step_start = time.perf_counter()
             t = data.time
             
-            # Scenario management (automated unless user interacts manually)
-            if not control_settings["interactive_mode"]:
-                if t >= 16.0:
-                    print("\nAutomated presentation scenario completed. Exiting simulation...")
-                    break
-                    
-                # 0~8s is Impedance Grasping, 8~16s is Cartesian PD Grasping
-                if t < 8.0:
-                    use_impedance_control = True
-                else:
-                    use_impedance_control = False
-            else:
-                # Manual mode (read settings modified by keyboard callback)
-                use_impedance_control = control_settings["use_impedance_control"]
+            # Interactive manual mode handles variables dynamically modified by keyboard callbacks
+            use_impedance_control = control_settings["use_impedance_control"]
+            z_target = control_settings["z_target"]
+                
+            # Apply dynamic Z coordinate to target goals
+            current_goals = goals.copy()
+            current_goals[:, 2] = z_target
+            
+            # Update visual markers for fingertip goals in the viewer
+            with viewer.lock():
+                for idx, goal in enumerate(current_goals):
+                    viewer.user_scn.geoms[idx].pos = goal
             
             # Console output every 1.0 second
             if step_count % 1000 == 0:
-                mode_str = "Impedance Control" if use_impedance_control else "Cartesian PD Control"
-                print(f"Time: {t:4.1f}s | Squeezing Mode: {mode_str}")
+                mode_str = "Impedance" if use_impedance_control else "Cartesian PD"
+                lift_str = "Lifting" if z_target > 0.12 else "Grasping"
+                print(f"Time: {t:5.1f}s | Mode: {mode_str:<12} | Z-Target: {z_target:.2f}m ({lift_str})")
                 
             # Initialize joint torque vector for the robot (9 actuators)
             tau_ctrl = np.zeros(n_actuators)
@@ -182,7 +188,7 @@ def main():
             for idx, tip in enumerate(tips):
                 # 1. Position error and velocity in world frame
                 tip_pos = data.site(tip).xpos
-                x_error = goals[idx] - tip_pos
+                x_error = current_goals[idx] - tip_pos
                 ee_errors_step.extend(x_error)
                 
                 # Get local-to-world rotation matrix of the site
@@ -281,50 +287,99 @@ def main():
     errors_mf = np.linalg.norm(errors_log[:, 3:6], axis=1)
     errors_th = np.linalg.norm(errors_log[:, 6:9], axis=1)
     
-    fig, axes = plt.subplots(2, 1, figsize=(12, 9), sharex=True)
+    # Apply clean style parameters
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['text.color'] = '#2c3e50'
+    
+    fig, axes = plt.subplots(2, 1, figsize=(13, 9.5), sharex=True)
+    
+    # Modern HSL-tailored colors
+    color_ff = '#E74C3C'  # Sunset Red
+    color_mf = '#2ECC71'  # Emerald Green
+    color_th = '#3498DB'  # Sky Blue
     
     # Plot 1: Fingertip Force Magnitudes
-    axes[0].plot(time_log, forces_ff, 'r-', linewidth=1.5, label='Index Finger (FF)')
-    axes[0].plot(time_log, forces_mf, 'g-', linewidth=1.5, label='Middle Finger (MF)')
-    axes[0].plot(time_log, forces_th, 'b-', linewidth=1.5, label='Thumb (TH)')
-    axes[0].set_ylabel("Grasping Force Magnitude (N)", fontsize=11)
-    axes[0].set_title("Fingertip Grasping Force Feedback (Magnitude)", fontsize=13, fontweight='bold', pad=15)
-    axes[0].legend(loc='upper right', framealpha=0.9)
-    axes[0].grid(True, linestyle=':', alpha=0.6)
+    axes[0].plot(time_log, forces_ff, color=color_ff, linewidth=2.0, label='Index Finger (FF)')
+    axes[0].plot(time_log, forces_mf, color=color_mf, linewidth=2.0, label='Middle Finger (MF)')
+    axes[0].plot(time_log, forces_th, color=color_th, linewidth=2.0, label='Thumb (TH)')
+    axes[0].set_ylabel("Grasping Force Magnitude (N)", fontsize=11, fontweight='bold', labelpad=10)
+    axes[0].set_title("Fingertip Grasping Force Feedback (Magnitude)", fontsize=14, fontweight='bold', pad=15)
+    axes[0].legend(loc='upper right', frameon=True, framealpha=0.9, facecolor='#ffffff', edgecolor='#dcdde1')
     
     # Plot 2: Position Error Magnitudes
-    axes[1].plot(time_log, errors_ff, 'r-', linewidth=1.5, label='Index Finger (FF)')
-    axes[1].plot(time_log, errors_mf, 'g-', linewidth=1.5, label='Middle Finger (MF)')
-    axes[1].plot(time_log, errors_th, 'b-', linewidth=1.5, label='Thumb (TH)')
-    axes[1].set_xlabel("Time (seconds)", fontsize=11)
-    axes[1].set_ylabel("Position Squeeze Error (m)", fontsize=11)
-    axes[1].set_title("Fingertip Position Tracking Errors during Grasping", fontsize=13, fontweight='bold', pad=15)
-    axes[1].legend(loc='upper right', framealpha=0.9)
-    axes[1].grid(True, linestyle=':', alpha=0.6)
+    axes[1].plot(time_log, errors_ff, color=color_ff, linewidth=2.0, label='Index Finger (FF)')
+    axes[1].plot(time_log, errors_mf, color=color_mf, linewidth=2.0, label='Middle Finger (MF)')
+    axes[1].plot(time_log, errors_th, color=color_th, linewidth=2.0, label='Thumb (TH)')
+    axes[1].set_xlabel("Time (seconds)", fontsize=11, fontweight='bold', labelpad=10)
+    axes[1].set_ylabel("Position Squeeze Error (m)", fontsize=11, fontweight='bold', labelpad=10)
+    axes[1].set_title("Fingertip Position Tracking Errors during Grasping", fontsize=14, fontweight='bold', pad=15)
+    axes[1].legend(loc='upper right', frameon=True, framealpha=0.9, facecolor='#ffffff', edgecolor='#dcdde1')
     
-    # Highlight Control Phases on both subplots
+    # Clean up Spines and Customize Grid for both
     for ax in axes:
-        # Phase backgrounds
-        # Impedance Control Phase (0s ~ 8s)
-        ax.axvspan(0, 8, color='#e6f2ff', alpha=0.6, label='Impedance Control')
-        # Cartesian PD Control Phase (8s ~ end)
-        ax.axvspan(8, max(16.0, time_log[-1]), color='#fff0e6', alpha=0.6, label='Cartesian PD Control')
+        # Hide the right and top spines for minimalist layout
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['left'].set_color('#7f8c8d')
+        ax.spines['bottom'].set_color('#7f8c8d')
         
-        # Vertical boundary line between controllers
-        ax.axvline(x=8.0, color='gray', linestyle='--', alpha=0.8)
-            
-    # Add text labels on the top subplot to guide the presentation
-    ylim_force = axes[0].get_ylim()[1]
-    axes[0].text(4.0, ylim_force * 0.75, "Impedance Grasping\n(Compliant & Low Grasping Force)", ha='center', va='center', fontsize=11, fontweight='bold', color='#004080')
-    axes[0].text(12.0, ylim_force * 0.75, "Cartesian PD Grasping\n(Stiff & Excessive Grasping Force)", ha='center', va='center', fontsize=11, fontweight='bold', color='#804000')
-    
-    # Save the plot image so the user can easily copy it into their PPT
+        # Subtle horizontal grids
+        ax.grid(True, which='both', linestyle='-', linewidth=0.5, color='#f1f2f6')
+        
+    # Plot backgrounds dynamically based on the logged controller mode
+    n_points = len(time_log)
+    if n_points > 0:
+        start_idx = 0
+        current_mode = mode_log[0]
+        impedance_midpoints = []
+        pd_midpoints = []
+        
+        for i in range(1, n_points):
+            if mode_log[i] != current_mode or i == n_points - 1:
+                t_start = time_log[start_idx]
+                t_end = time_log[i]
+                color = '#EDF4FC' if current_mode else '#FDF5EC'
+                
+                # Apply background span to both plots
+                for ax in axes:
+                    ax.axvspan(t_start, t_end, color=color, alpha=0.9)
+                
+                # Keep track of segment midpoints to place descriptive text cards
+                midpoint = (t_start + t_end) / 2.0
+                if current_mode:
+                    impedance_midpoints.append(midpoint)
+                else:
+                    pd_midpoints.append(midpoint)
+                
+                # Draw mode transition boundary line
+                if mode_log[i] != current_mode:
+                    for ax in axes:
+                        ax.axvline(x=t_end, color='#7f8c8d', linestyle='--', linewidth=1.2, alpha=0.6)
+                        
+                start_idx = i
+                current_mode = mode_log[i]
+        
+        # Place the floating info cards at the center of the largest segments
+        ylim_force = axes[0].get_ylim()[1]
+        bbox_impedance = dict(boxstyle='round,pad=0.5', facecolor='#ffffff', edgecolor='#3498DB', linewidth=1.5, alpha=0.95)
+        bbox_pd = dict(boxstyle='round,pad=0.5', facecolor='#ffffff', edgecolor='#E74C3C', linewidth=1.5, alpha=0.95)
+        
+        if len(impedance_midpoints) > 0:
+            axes[0].text(impedance_midpoints[0], ylim_force * 0.70, 
+                         "Impedance Grasping & Lifting\n(Compliant & Dynamic Force Adjustment)", 
+                         ha='center', va='center', fontsize=10.5, fontweight='bold', color='#2980B9', bbox=bbox_impedance)
+        if len(pd_midpoints) > 0:
+            axes[0].text(pd_midpoints[0], ylim_force * 0.70, 
+                         "Cartesian PD Grasping & Lifting\n(Stiff & Dangerous Grasping Force)", 
+                         ha='center', va='center', fontsize=10.5, fontweight='bold', color='#C0392B', bbox=bbox_pd)
+                 
+    # Adjust spacing and save
     plot_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grasping_force_comparison.png")
     plt.tight_layout()
     plt.savefig(plot_save_path, dpi=300)
     print(f"Comparison plot saved successfully to: {plot_save_path}")
     
-    plt.show()
+    # plt.show()
 
 if __name__ == "__main__":
     main()
