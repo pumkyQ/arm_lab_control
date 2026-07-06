@@ -48,10 +48,12 @@ def main():
     # The mount is at z = 0.30, and fingers point downward.
     # The target ball is spawned at [0, 0, 0.07] with radius 0.04 (top of ball is at z = 0.11).
     # We set goals around/inside the ball to pinch or touch it.
+    # Set goals slightly inside the box boundary to squeeze it
+    # Squeezing the static pillar (base center at [0, 0, 0.04], box size x/y is 5cm, height is 8cm)
     goals = np.array([
-        [0.0, -0.02, 0.08],  # FFtip goal (front-ish)
-        [0.025, 0.015, 0.08], # MFtip goal (right-ish)
-        [-0.025, 0.015, 0.08] # THtip goal (left-ish)
+        [0.0, -0.015, 0.05],  # FFtip goal (squeezing in from front)
+        [0.015, 0.010, 0.05],  # MFtip goal (squeezing in from back-right)
+        [-0.015, 0.010, 0.05]  # THtip goal (squeezing in from back-left)
     ])
     
     # 5. Controller Gains and Impedance Parameters
@@ -83,12 +85,29 @@ def main():
     print("Close the viewer window to view performance plots.")
     print("Press Ctrl+C in the terminal to exit.\n")
     
-    # Launch the passive viewer
-    with mujoco.viewer.launch_passive(model, data) as viewer:
+    # Control settings for manual interaction
+    control_settings = {
+        "use_impedance_control": True,
+        "interactive_mode": False
+    }
+    
+    def key_callback(keycode):
+        try:
+            key_char = chr(keycode).lower()
+            if key_char == 'm':
+                control_settings["use_impedance_control"] = not control_settings["use_impedance_control"]
+                control_settings["interactive_mode"] = True
+                mode_str = "Impedance Control" if control_settings["use_impedance_control"] else "Cartesian PD Control"
+                print(f"\n>>> [MANUAL MODE] Control mode toggled to: {mode_str} <<<\n")
+        except ValueError:
+            pass
+
+    # Launch the passive viewer with key callback
+    with mujoco.viewer.launch_passive(model, data, key_callback=key_callback) as viewer:
         # Initial visualization settings
         with viewer.lock():
             viewer.opt.flags[mj.mjtVisFlag.mjVIS_CONTACTFORCE] = 0
-            # Enable geom group 3 (where the target ball is defined)
+            # Enable geom group 3 (where the target ball/box is defined)
             viewer.opt.geomgroup[3] = 1
             
             # Draw visual markers for fingertip goals
@@ -103,75 +122,39 @@ def main():
                 # Position the marker
                 viewer.user_scn.geoms[viewer.user_scn.ngeom - 1].pos = goal
                 viewer.user_scn.geoms[viewer.user_scn.ngeom - 1].size = [0.008, 0, 0]
-                
-            # Draw visual markers for perturbation forces (initially hidden/transparent)
-            force_geom_indices = []
-            for _ in range(3):
-                viewer.user_scn.ngeom += 1
-                force_geom_indices.append(viewer.user_scn.ngeom - 1)
-                mj.mjv_initGeom(
-                    viewer.user_scn.geoms[viewer.user_scn.ngeom - 1],
-                    mj.mjtGeom.mjGEOM_CAPSULE,
-                    np.zeros(3), np.zeros(3), np.zeros(9),
-                    np.array([0.9, 0.1, 0.1, 0.0]) # Fully transparent red
-                )
         
         step_count = 0
         
         # Log array for control modes
         mode_log = []
-        perturbation_log = []
         
+        print("\n=== INTERACTIVE GRASPING SIMULATION STARTED ===")
+        print("Press 'M' key to manually toggle control mode (Impedance <-> Cartesian PD)")
+        print("==============================================\n")
+
         while viewer.is_running():
             step_start = time.perf_counter()
             t = data.time
             
-            # 16-second automated presentation scenario
-            if t >= 16.0:
-                print("\nAutomated presentation scenario completed. Exiting simulation...")
-                break
-                
-            # Determine control mode dynamically based on time
-            if t < 8.0:
-                use_impedance_control = True
+            # Scenario management (automated unless user interacts manually)
+            if not control_settings["interactive_mode"]:
+                if t >= 16.0:
+                    print("\nAutomated presentation scenario completed. Exiting simulation...")
+                    break
+                    
+                # 0~8s is Impedance Grasping, 8~16s is Cartesian PD Grasping
+                if t < 8.0:
+                    use_impedance_control = True
+                else:
+                    use_impedance_control = False
             else:
-                use_impedance_control = False
-                
-            # Determine perturbation force (Apply a 1.2N force in Y-direction during perturbation phases)
-            perturbation_force = 0.0
-            if (4.0 <= t < 6.0) or (12.0 <= t < 14.0):
-                perturbation_force = 1.2
-                
-            # Reset and apply external force to fingertips
-            for body_id in end_effector_ids:
-                # Apply global wrench: [Fx, Fy, Fz, Tx, Ty, Tz]
-                data.xfrc_applied[body_id] = np.array([0.0, perturbation_force, 0.0, 0.0, 0.0, 0.0])
-                
-            # Render red force indicator capsules in the viewer
-            with viewer.lock():
-                for idx, tip in enumerate(tips):
-                    geom_idx = force_geom_indices[idx]
-                    if perturbation_force > 0:
-                        # Draw a red capsule pointing in the direction of the force (applied in Y, pushing from -Y to +Y)
-                        start_pos = data.site(tip).xpos
-                        # Draw capsule representing the force pushing on the finger
-                        mj.mjv_connector(
-                            viewer.user_scn.geoms[geom_idx],
-                            mj.mjtGeom.mjGEOM_CAPSULE,
-                            0.003, # width
-                            start_pos - np.array([0.0, 0.04, 0.0]), # from
-                            start_pos # to
-                        )
-                        viewer.user_scn.geoms[geom_idx].rgba = np.array([0.9, 0.1, 0.1, 0.8])
-                    else:
-                        viewer.user_scn.geoms[geom_idx].rgba = np.array([0, 0, 0, 0])
-                        viewer.user_scn.geoms[geom_idx].size = np.zeros(3)
+                # Manual mode (read settings modified by keyboard callback)
+                use_impedance_control = control_settings["use_impedance_control"]
             
             # Console output every 1.0 second
             if step_count % 1000 == 0:
                 mode_str = "Impedance Control" if use_impedance_control else "Cartesian PD Control"
-                force_str = f"ON (+{perturbation_force:.1f}N Y-axis)" if perturbation_force > 0 else "OFF"
-                print(f"Time: {t:4.1f}s | Mode: {mode_str:<18} | Ext Force: {force_str}")
+                print(f"Time: {t:4.1f}s | Squeezing Mode: {mode_str}")
                 
             # Initialize joint torque vector for the robot (9 actuators)
             tau_ctrl = np.zeros(n_actuators)
@@ -262,7 +245,6 @@ def main():
                 errors_log.append(ee_errors_step)
                 time_log.append(data.time)
                 mode_log.append(use_impedance_control)
-                perturbation_log.append(perturbation_force)
             
             step_count += 1
             
@@ -280,7 +262,6 @@ def main():
     errors_log = np.array(errors_log)
     time_log = np.array(time_log)
     mode_log = np.array(mode_log)
-    perturbation_log = np.array(perturbation_log)
     
     # Calculate force and error magnitudes for each fingertip
     forces_ff = np.linalg.norm(forces_log[:, 0:3], axis=1)
@@ -297,8 +278,8 @@ def main():
     axes[0].plot(time_log, forces_ff, 'r-', linewidth=1.5, label='Index Finger (FF)')
     axes[0].plot(time_log, forces_mf, 'g-', linewidth=1.5, label='Middle Finger (MF)')
     axes[0].plot(time_log, forces_th, 'b-', linewidth=1.5, label='Thumb (TH)')
-    axes[0].set_ylabel("Force Magnitude (N)", fontsize=11)
-    axes[0].set_title("Fingertip Force Sensor Feedback (Magnitude)", fontsize=13, fontweight='bold', pad=15)
+    axes[0].set_ylabel("Grasping Force Magnitude (N)", fontsize=11)
+    axes[0].set_title("Fingertip Grasping Force Feedback (Magnitude)", fontsize=13, fontweight='bold', pad=15)
     axes[0].legend(loc='upper right', framealpha=0.9)
     axes[0].grid(True, linestyle=':', alpha=0.6)
     
@@ -307,39 +288,29 @@ def main():
     axes[1].plot(time_log, errors_mf, 'g-', linewidth=1.5, label='Middle Finger (MF)')
     axes[1].plot(time_log, errors_th, 'b-', linewidth=1.5, label='Thumb (TH)')
     axes[1].set_xlabel("Time (seconds)", fontsize=11)
-    axes[1].set_ylabel("Position Error Magnitude (m)", fontsize=11)
-    axes[1].set_title("Fingertip Position Tracking Errors (Magnitude)", fontsize=13, fontweight='bold', pad=15)
+    axes[1].set_ylabel("Position Squeeze Error (m)", fontsize=11)
+    axes[1].set_title("Fingertip Position Tracking Errors during Grasping", fontsize=13, fontweight='bold', pad=15)
     axes[1].legend(loc='upper right', framealpha=0.9)
     axes[1].grid(True, linestyle=':', alpha=0.6)
     
-    # Highlight Control Phases & Perturbations on both subplots
+    # Highlight Control Phases on both subplots
     for ax in axes:
         # Phase backgrounds
         # Impedance Control Phase (0s ~ 8s)
         ax.axvspan(0, 8, color='#e6f2ff', alpha=0.6, label='Impedance Control')
-        # Cartesian PD Control Phase (8s ~ 16s)
-        ax.axvspan(8, 16, color='#fff0e6', alpha=0.6, label='Cartesian PD Control')
+        # Cartesian PD Control Phase (8s ~ end)
+        ax.axvspan(8, max(16.0, time_log[-1]), color='#fff0e6', alpha=0.6, label='Cartesian PD Control')
         
-        # Perturbation intervals (4s ~ 6s, 12s ~ 14s)
-        ax.axvspan(4, 6, color='#ffcccc', alpha=0.5, hatch='//', edgecolor='#ff9999')
-        ax.axvspan(12, 14, color='#ffcccc', alpha=0.5, hatch='//', edgecolor='#ff9999')
-        
-        # Vertical boundary lines
-        boundaries = [4.0, 6.0, 8.0, 12.0, 14.0]
-        for b in boundaries:
-            ax.axvline(x=b, color='gray', linestyle='--', alpha=0.8)
+        # Vertical boundary line between controllers
+        ax.axvline(x=8.0, color='gray', linestyle='--', alpha=0.8)
             
     # Add text labels on the top subplot to guide the presentation
     ylim_force = axes[0].get_ylim()[1]
-    axes[0].text(2.0, ylim_force * 0.75, "Impedance\n(Normal)", ha='center', va='center', fontsize=10, fontweight='bold', color='#004080')
-    axes[0].text(5.0, ylim_force * 0.75, "Impedance\n+ Perturbation", ha='center', va='center', fontsize=10, fontweight='bold', color='#800000')
-    axes[0].text(7.0, ylim_force * 0.75, "Impedance\n(Recovering)", ha='center', va='center', fontsize=10, fontweight='bold', color='#004080')
-    axes[0].text(10.0, ylim_force * 0.75, "Cartesian PD\n(Normal)", ha='center', va='center', fontsize=10, fontweight='bold', color='#804000')
-    axes[0].text(13.0, ylim_force * 0.75, "PD\n+ Perturbation", ha='center', va='center', fontsize=10, fontweight='bold', color='#800000')
-    axes[0].text(15.0, ylim_force * 0.75, "PD\n(Recovering)", ha='center', va='center', fontsize=10, fontweight='bold', color='#804000')
+    axes[0].text(4.0, ylim_force * 0.75, "Impedance Grasping\n(Compliant & Low Grasping Force)", ha='center', va='center', fontsize=11, fontweight='bold', color='#004080')
+    axes[0].text(12.0, ylim_force * 0.75, "Cartesian PD Grasping\n(Stiff & Excessive Grasping Force)", ha='center', va='center', fontsize=11, fontweight='bold', color='#804000')
     
     # Save the plot image so the user can easily copy it into their PPT
-    plot_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "impedance_vs_pd_plot.png")
+    plot_save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grasping_force_comparison.png")
     plt.tight_layout()
     plt.savefig(plot_save_path, dpi=300)
     print(f"Comparison plot saved successfully to: {plot_save_path}")

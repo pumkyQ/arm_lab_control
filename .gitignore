@@ -25,4 +25,4 @@ mjmodel.mjb
 mjmodel.xml
 real_driver/log/
 *.png
-!MuJoCo/impedance_vs_pd_plot.png
+!MuJoCo/grasping_force_comparison.png
