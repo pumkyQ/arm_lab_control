@@ -31,7 +31,7 @@ def main():
     PULSES_PER_DEGREE = 11.489  # 1도당 펄스 수
     
     # 최종 튜닝 완료된 황금 게인 세팅 (Count 단위 기반)
-    Kp = 550
+    Kp = 50
     Kd = 0.42
     stiction_offset = 1600.0    # 마찰 저항 극복 전압 (1.6V)
     

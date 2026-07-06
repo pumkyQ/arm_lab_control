@@ -1,0 +1,55 @@
+<mujoco model="finger">
+  <compiler angle="radian" coordinate="local"/>
+  
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <asset>
+    <!-- Beautiful environment textures and materials -->
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0.05 0.05 0.1" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.1 0.15 0.2" rgb2="0.2 0.25 0.3" width="300" height="300" mark="edge" markrgb="0.3 0.3 0.3"/>
+    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" reflectance="0.2"/>
+    
+    <!-- Finger link materials -->
+    <material name="base_mat" rgba="0.1 0.4 0.8 1.0" shininess="0.6" specular="0.5"/>
+    <material name="link_mat" rgba="0.8 0.8 0.8 1.0" shininess="0.8" specular="0.7"/>
+  </asset>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="0 0 1" pos="0 0 0" material="grid"/>
+
+    <!-- Lighting -->
+    <light name="top_light" mode="targetbody" target="base_link" pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <light name="side_light" mode="targetbody" target="base_link" pos="1.5 1.5 1.5" dir="-1 -1 -1" diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
+
+    <!-- Base Link -->
+    <body name="base_link" pos="0 0 0.025">
+      <geom name="base_geom" type="box" size="0.05 0.05 0.025" material="base_mat"/>
+      
+      <!-- Joint 1 (Node 1, Axis 1) - 뿌리 관절 -->
+      <body name="link1" pos="0 0 0.025">
+        <joint name="joint1" type="hinge" axis="0 1 0" range="-3.0 0.5" limited="true"/>
+        <geom name="link1_geom" type="cylinder" size="0.02 0.05" pos="0 0 0.05" material="link_mat"/>
+        
+        <!-- Joint 3 (Node 2, Axis 1) - 중간 관절 -->
+        <body name="link2" pos="0 0 0.1">
+          <joint name="joint3" type="hinge" axis="0 1 0" range="-1.57 1.57" limited="true"/>
+          <geom name="link2_geom" type="cylinder" size="0.018 0.04" pos="0 0 0.04" material="link_mat"/>
+          
+          <!-- Joint 5 (Node 3, Axis 1) - 끝마디 관절 -->
+          <body name="link3" pos="0 0 0.08">
+            <joint name="joint5" type="hinge" axis="0 1 0" range="-1.57 1.57" limited="true"/>
+            <geom name="link3_geom" type="cylinder" size="0.016 0.03" pos="0 0 0.03" material="link_mat"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Position control actuators for interactive movement -->
+    <position name="actuator1" joint="joint1" ctrlrange="-3.0 0.5" kp="5.0"/>
+    <position name="actuator3" joint="joint3" ctrlrange="-1.57 1.57" kp="5.0"/>
+    <position name="actuator5" joint="joint5" ctrlrange="-1.57 1.57" kp="5.0"/>
+  </actuator>
+</mujoco>

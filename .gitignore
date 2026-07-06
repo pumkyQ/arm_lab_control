@@ -13,3 +13,16 @@ real_driver/log_data/
 *.csv
 *.log
 .vscode/
+
+# Cloned repositories
+kiis_2024_impedance_control/
+
+# MuJoCo temporary files & logs
+MUJOCO_LOG.TXT
+MJDATA.TXT
+MJMODEL.TXT
+mjmodel.mjb
+mjmodel.xml
+real_driver/log/
+*.png
+!MuJoCo/impedance_vs_pd_plot.png

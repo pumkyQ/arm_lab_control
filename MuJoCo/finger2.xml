@@ -1,0 +1,56 @@
+<mujoco model="finger2">
+  <compiler angle="radian" coordinate="local"/>
+  
+  <option gravity="0 0 -9.81" timestep="0.002"/>
+
+  <asset>
+    <!-- Beautiful environment textures and materials -->
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0.05 0.05 0.1" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.1 0.15 0.2" rgb2="0.2 0.25 0.3" width="300" height="300" mark="edge" markrgb="0.3 0.3 0.3"/>
+    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" reflectance="0.2"/>
+    
+    <!-- Link materials -->
+    <material name="dark_grey" rgba="0.2 0.2 0.2 1.0" shininess="0.5" specular="0.3"/>
+    <material name="accent_blue" rgba="0.1 0.4 0.8 1.0" shininess="0.6" specular="0.5"/>
+    <material name="silver" rgba="0.75 0.75 0.75 1.0" shininess="0.8" specular="0.7"/>
+  </asset>
+
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="floor" type="plane" size="0 0 1" pos="0 0 0" material="grid"/>
+
+    <!-- Lighting -->
+    <light name="top_light" mode="targetbody" target="link1" pos="0 0 2" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <light name="side_light" mode="targetbody" target="link1" pos="1.5 1.5 1.5" dir="-1 -1 -1" diffuse="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
+
+    <!-- Link 1 (Base Link) -->
+    <body name="link1" pos="0 0 0.0179">
+      <geom name="link1_geom" type="cylinder" size="0.01 0.0179" material="dark_grey"/>
+      
+      <!-- Joint 1 -->
+      <body name="link2" pos="0 0 0.0358">
+        <joint name="joint1" type="hinge" axis="0 1 0" range="-2.0 2.0" limited="true"/>
+        <geom name="link2_geom" type="cylinder" size="0.009 0.0179" pos="0 0 0.0358" material="accent_blue"/>
+        
+        <!-- Joint 2 -->
+        <body name="link3" pos="0 0 0.0358">
+          <joint name="joint2" type="hinge" axis="0 1 0" range="-2.0 2.0" limited="true"/>
+          <geom name="link3_geom" type="cylinder" size="0.008 0.0179" pos="0 0 0.0716" material="silver"/>
+          
+          <!-- Joint 3 -->
+          <body name="link4" pos="0 0 0.0358">
+            <joint name="joint3" type="hinge" axis="0 1 0" range="-2.0 2.0" limited="true"/>
+            <geom name="link4_geom" type="cylinder" size="0.007 0.02025" pos="0 0 0.1074" material="dark_grey"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <!-- Position control actuators for interactive movement -->
+    <position name="actuator1" joint="joint1" ctrlrange="-2.0 2.0" kp="5.0"/>
+    <position name="actuator2" joint="joint2" ctrlrange="-2.0 2.0" kp="5.0"/>
+    <position name="actuator3" joint="joint3" ctrlrange="-2.0 2.0" kp="5.0"/>
+  </actuator>
+</mujoco>

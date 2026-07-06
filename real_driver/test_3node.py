@@ -63,7 +63,9 @@ class KitechJointController(Node):
         self.K_emf_count = self.K_emf_rad / self.COUNTS_PER_RADIAN            
         
         self.voltage_limit = 9500.0      
-        self.ERROR_THRESH_COUNT = 2.0    
+        self.ERROR_THRESH_COUNT = 10.0    
+        self.ERROR_THRESH_COUNT = 2.0    # 정밀 제어를 위해 데드밴드를 2카운트로 복원
+        self.LPF_ALPHA = 0.25            # 속도 노이즈 제거 및 안정성 확보를 위해 LPF 재적용
         
         self.LOOP_RATE = 50.0            # 50 Hz 제어
         self.dt = 1.0 / self.LOOP_RATE
@@ -71,9 +73,12 @@ class KitechJointController(Node):
         # 제어 상태 변수 초기화
         self.current_raw_count = self.ALIGN_RAW_COUNT
         self.current_velocity_raw = 0.0
+        self.filtered_velocity_old = 0.0 # LPF를 위한 이전 속도값 변수 추가
         self.actual_current_ma = 0.0
         self.error_register = 0
         self.status_word = 0
+        self.last_loop_time = time.monotonic() # 주기 측정을 위한 이전 시간 저장
+        self.cycle_time_ms = 0.0               # 측정된 주기를 ms 단위로 저장
         self.input_buffer = ""
         
         # 터미널 설정 저장 및 cbreak 모드 설정 (엔터 없이 키 입력 즉시 감지)
@@ -126,6 +131,7 @@ class KitechJointController(Node):
         # CSV 헤더 작성 (status_msg.data와 매칭)
         header = ["Timestamp", "Target_Deg", "Real_Deg", "Error_Deg", "Voltage_mV", 
                   "Raw_Vel", "Filtered_Vel", "V_EMF", "Control_Mode"]
+                  "Raw_Vel", "Filtered_Vel", "V_EMF", "Control_Mode", "Current_mA"]
         self.csv_writer.writerow(header)
         self.get_logger().info(f"💾 데이터 기록 시작: {self.csv_filename}")
 
@@ -171,18 +177,24 @@ class KitechJointController(Node):
         if self.current_mode == 1:
             self.Kp = 330
             self.Kd = 0.21
+            self.Kp = 150            # 안정적인 저강성 게인
+            self.Kd = 4.0            # LPF와 함께 동작하는 적절한 댐핑 게인
             self.stiction_offset = 1600.0
             self.get_logger().info("⚙️ [PARAMETER] 모드 1 활성화: 기본 게인 제어 세팅 완료")
             
         elif self.current_mode == 2:
             self.Kp = 650          # 강성 증가
             self.Kd = 0.48
+            self.Kp = 550          # 강성 증가
+            self.Kd = 2.0
             self.stiction_offset = 1750.0  
             self.get_logger().info("⚙️ [PARAMETER] 모드 2 활성화: 고강성(High-Gain) 제어 세팅 완료")
             
         elif self.current_mode == 3:
             self.Kp = 450          # 유연한 제어
             self.Kd = 0.35
+            self.Kp = 350          # 유연한 제어
+            self.Kd = 1.2
             self.stiction_offset = 1450.0
             self.get_logger().info("⚙️ [PARAMETER] 모드 3 활성화: 저유연(Soft-Gain) 제어 세팅 완료")
 
@@ -259,6 +271,11 @@ class KitechJointController(Node):
                     self.pub_status.publish(dummy_msg)
             self.init_retry_counter += 1
             return
+
+        # --- 실제 제어 주기(Cycle Time) 측정 ---
+        current_time = time.monotonic()
+        self.cycle_time_ms = (current_time - self.last_loop_time) * 1000.0
+        self.last_loop_time = current_time
 
         # ----------------------------------------------------------------------
         # 1. [🆕 수정] 다중 모드 및 모드 간 복귀 시퀀스 상태 머신
@@ -394,15 +411,31 @@ class KitechJointController(Node):
             return
 
         # 제어 연산
+        # 1. 속도 LPF 연산
+        filtered_velocity = (self.LPF_ALPHA * self.current_velocity_raw) + ((1.0 - self.LPF_ALPHA) * self.filtered_velocity_old)
+        self.filtered_velocity_old = filtered_velocity
+
+        # 2. 제어 연산 (필터링된 속도 사용)
         error_count = self.target_raw_count - self.current_raw_count
         v_pd = (self.Kp * error_count) - (self.Kd * self.current_velocity_raw)
         v_emf = self.K_emf_count * self.current_velocity_raw
+        v_pd = (self.Kp * error_count) - (self.Kd * filtered_velocity)
+        v_emf = self.K_emf_count * filtered_velocity
         
+        # 3. 정밀 안착을 위한 불감대(Deadband) 로직 적용
         if abs(error_count) > self.ERROR_THRESH_COUNT:
+            # 오차가 클 때: PD + 마찰 보상
             v_stiction = self.stiction_offset * np.sign(error_count)
             total_voltage = v_pd + v_stiction + v_emf
         else:
             total_voltage = 0.0
+            # 오차가 작을 때: 부드러운 안착을 위한 Tail 전압 제어
+            active_direction = np.sign(filtered_velocity if filtered_velocity != 0 else error_count)
+            if active_direction != 0:
+                v_stiction_tail = (self.stiction_offset * 0.4) * active_direction
+            else:
+                v_stiction_tail = 0.0
+            total_voltage = (-self.Kd * filtered_velocity) + v_emf + v_stiction_tail
 
         if (self.current_raw_count >= self.MAX_FLEX_LIMIT and total_voltage > 0) or \
            (self.current_raw_count <= self.MAX_EXT_LIMIT and total_voltage < 0):
@@ -412,11 +445,13 @@ class KitechJointController(Node):
         self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(self.TARGET_NODE_ID, int(clamped_voltage), self.TARGET_AXIS))
 
         # 데이터 발행 및 로깅
+        # 4. 데이터 발행 및 로깅
         real_deg = (self.current_raw_count - self.ALIGN_RAW_COUNT) / self.PULSES_PER_DEGREE
         cmd_deg = (self.target_raw_count - self.ALIGN_RAW_COUNT) / self.PULSES_PER_DEGREE
         error_deg = error_count / self.PULSES_PER_DEGREE
         
         log_row = [cmd_deg, real_deg, error_deg, clamped_voltage, float(self.current_velocity_raw), float(self.current_velocity_raw), v_emf, float(self.current_mode)]
+        log_row = [cmd_deg, real_deg, error_deg, clamped_voltage, float(self.current_velocity_raw), filtered_velocity, v_emf, float(self.current_mode), float(self.actual_current_ma)]
         
         status_msg = Float64MultiArray()
         status_msg.data = log_row
@@ -425,7 +460,7 @@ class KitechJointController(Node):
         current_time_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self.csv_writer.writerow([current_time_str] + log_row)
 
-        sys.stdout.write(f"\r [M{self.current_mode}] Target:{int(self.target_raw_count)} | Act:{self.current_raw_count} | V:{clamped_voltage:4.0f}mV | Stat:{hex(self.status_word)} | 입력창 ➡️ {self.input_buffer}      ")
+        sys.stdout.write(f"\r [M{self.current_mode}] [Cycle: {self.cycle_time_ms:4.1f}ms] | Target:{int(self.target_raw_count)} | Act:{self.current_raw_count} | V:{clamped_voltage:4.0f}mV | Stat:{hex(self.status_word)} | 입력창 ➡️ {self.input_buffer}      ")
         sys.stdout.flush()
 
     def shutdown_hook(self):
