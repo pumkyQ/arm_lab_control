@@ -64,9 +64,13 @@ def main():
     # Cartesian Space Impedance Parameters
     # Inertia shaping (Md), Stiffness (Kd), Damping (Dd)
     desired_inertia = np.eye(3) * 0.015
-    desired_stiffness = np.eye(3) * 150.0
-    desired_damping = np.eye(3) * 6.0
+    desired_stiffness = np.eye(3) * 80.0   # Squeeze stiffness (gentler)
+    desired_damping = np.eye(3) * 20.0    # High damping to suppress contact chattering
     Md_inv = np.linalg.inv(desired_inertia)
+    
+    # Low-pass filter for force sensor feedback to prevent chattering
+    lpf_alpha = 0.15
+    f_ext_filtered = [np.zeros(3) for _ in range(3)]
     
     # Singularity damping term (for pseudo-inverse)
     singularity_damping = 0.03
@@ -206,7 +210,12 @@ def main():
                 sensor_name = f"{tip[:2]}_force"
                 raw_sensor_data = data.sensor(sensor_name).data.copy()
                 # Rotate local force vector to global frame
-                f_ext = rotation_matrix @ raw_sensor_data
+                f_ext_raw = rotation_matrix @ raw_sensor_data
+                
+                # Apply 1st-order Low-pass Filter to suppress contact chattering in simulation
+                f_ext = lpf_alpha * f_ext_raw + (1.0 - lpf_alpha) * f_ext_filtered[idx]
+                f_ext_filtered[idx] = f_ext.copy()
+                
                 ee_forces_step.extend(f_ext)
                 
                 # 5. Compute Damped Pseudo-Inverse of J for redundancy resolution
