@@ -22,26 +22,26 @@ class RealWelconPDDriver(Node):
         self.perf_pub = self.create_publisher(Float64MultiArray, '/joint_performance', 10)
         
         # 2. 제어 변수 정의
-        self.joint_names = ['joint1', 'joint3', 'joint5']
-        self.target_positions = [0.0] * 3  
-        self.current_positions = [0.0] * 3 
-        self.current_velocities = [0.0] * 3
-        self.applied_voltages = [0.0] * 3
-        self.actual_currents = [0.0] * 3  # 실제 흐르는 전류 모니터링 (mA)
-        self.error_integral = [0.0] * 3  # I 제어를 위한 오차 누적분
-        self.status_words = [0] * 3       # 드라이버 상태 모니터링용
-        self.raw_positions = [0.0] * 3    # 엔코더 원시 값 저장 변수 추가
+        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4']
+        self.target_positions = [0.0] * 4  
+        self.current_positions = [0.0] * 4 
+        self.current_velocities = [0.0] * 4
+        self.applied_voltages = [0.0] * 4
+        self.actual_currents = [0.0] * 4  # 실제 흐르는 전류 모니터링 (mA)
+        self.error_integral = [0.0] * 4  # I 제어를 위한 오차 누적분
+        self.status_words = [0] * 4       # 드라이버 상태 모니터링용
+        self.raw_positions = [0.0] * 4    # 엔코더 원시 값 저장 변수 추가
 
         # 자동 정렬 모드 플래그 및 목표치 (Raw Count 기준)
         self.alignment_complete = True    # 사용자 요청에 따라 일단 True로 설정하여 GUI 제어 우선
-        self.align_targets_raw = [-955.0, 0.0, -337.0] 
+        self.align_targets_raw = [0.0] * 4 
         
         # 2.1 조인트 오프셋 설정 (Calibration)
-        # -955/740 = -1.2905, -337/740 = -0.4554
-        self.joint_offsets = [-1.2905, 0.0, -0.4554]
+        self.joint_offsets = [0.0] * 4
 
-        # Node ID 매핑 (Joint 1: Node 1, Joint 3: Node 2, Joint 5: Node 3)
-        self.node_to_idx = {1: 0, 2: 1, 3: 2}
+        # Node-Axis 조합 매핑 인덱스용 딕셔너리 생성
+        # joint1 -> Node 3 Axis 1, joint2 -> Node 2 Axis 1, joint3 -> Node 1 Axis 1, joint4 -> Node 3 Axis 2
+        self.node_axis_to_idx = {(3, 1): 0, (2, 1): 1, (1, 1): 2, (3, 2): 3}
 
         # 3. 하드웨어 상수 설정
         self.COUNTS_PER_RADIAN = 740.0  
@@ -54,10 +54,10 @@ class RealWelconPDDriver(Node):
         
         # 4. 제어 게인 및 안전 제한값
         # 조인트 3(index 1)은 고장이므로 모든 게인을 0으로 설정하여 보호
-        self.Kp_list = [30000.0, 0.0, 20000.0]
-        self.Ki_list = [400.0, 0.0, 300.0]
-        self.Kd_list = [3000.0, 0.0, 1800.0]
-        self.stiction_offset_list = [5500.0, 0.0, 2500.0]
+        self.Kp_list = [30000.0, 30000.0, 20000.0, 20000.0]
+        self.Ki_list = [400.0, 400.0, 300.0, 300.0]
+        self.Kd_list = [3000.0, 3000.0, 1800.0, 1800.0]
+        self.stiction_offset_list = [5500.0, 5500.0, 2500.0, 2500.0]
         self.i_limit = 1200.0                             # I항 최대 누적 제한 (mV)
 
         self.CURRENT_LIMIT_MA = 800.0    # 800mA 이상 시 보호를 위해 차단
@@ -74,8 +74,8 @@ class RealWelconPDDriver(Node):
             self.get_logger().error(f"CAN Connection Failed: {e}")
             return
 
-        # 6. 하드웨어 초기화 (Node ID 1, 2, 3의 Axis 1 활성화)
-        self.real_axes = [(1, 1), (2, 1), (3, 1)]
+        # 6. 하드웨어 초기화 (Node ID 1, 2, 3의 Axis 1, 2 활성화)
+        self.real_axes = [(3, 1), (2, 1), (1, 1), (3, 2)]
         self.init_hardware()
 
         # 50Hz 제어 루프
@@ -84,7 +84,7 @@ class RealWelconPDDriver(Node):
 
     def init_hardware(self):
         """모터 드라이버 NMT Start 및 Enable Operation 설정"""
-        self.get_logger().info("Initializing Welcon Nodes (1, 2, 3)...")
+        self.get_logger().info("Initializing Welcon Nodes (Joint 1, 2, 3, 4)...")
         self.bus.send(self.protocol.make_nmt_start(0))
         time.sleep(0.1)
         
@@ -126,34 +126,37 @@ class RealWelconPDDriver(Node):
             if frame is None:
                 break
             
-            # TPDO 파싱
+            # TPDO 파싱 (단일 축 드라이버용)
             feedback = self.protocol.parse_feedback(frame)
-            if feedback and feedback.node_id in self.node_to_idx:
-                idx = self.node_to_idx[feedback.node_id]
-                if feedback.position_raw is not None:
-                    self.current_positions[idx] = (feedback.position_raw / self.COUNTS_PER_RADIAN) - self.joint_offsets[idx]
-                if feedback.velocity_raw is not None:
-                    self.current_velocities[idx] = feedback.velocity_raw / self.VELOCITY_COUNTS_PER_RADIAN
+            if feedback:
+                node_id = feedback.node_id
+                axis = 1 # TPDO는 기본적으로 Axis 1로 처리
+                if (node_id, axis) in self.node_axis_to_idx:
+                    idx = self.node_axis_to_idx[(node_id, axis)]
+                    if feedback.position_raw is not None:
+                        self.current_positions[idx] = (feedback.position_raw / self.COUNTS_PER_RADIAN) - self.joint_offsets[idx]
+                    if feedback.velocity_raw is not None:
+                        self.current_velocities[idx] = feedback.velocity_raw / self.VELOCITY_COUNTS_PER_RADIAN
         
             # SDO 응답 파싱
             sdo_res = self.protocol.parse_sdo_response(frame)
-            if sdo_res and sdo_res.value is not None and sdo_res.node_id in self.node_to_idx:
-                idx = self.node_to_idx[sdo_res.node_id]
-                val = sdo_res.value
-                if val > 0x7FFFFFFF: val -= 0x100000000
+            if sdo_res and sdo_res.value is not None:
+                node_id = sdo_res.node_id
+                axis = 1 if sdo_res.index in [0x6064, 0x606c, 0x6041, 0x6078] else 2 if sdo_res.index in [0x6864, 0x686c, 0x6841, 0x6878] else None
+                if axis is not None and (node_id, axis) in self.node_axis_to_idx:
+                    idx = self.node_axis_to_idx[(node_id, axis)]
+                    val = sdo_res.value
+                    if val > 0x7FFFFFFF: val -= 0x100000000
 
-                if sdo_res.index in [0x6064, 0x6864]:
-                    self.raw_positions[idx] = val
-                    self.current_positions[idx] = (val / self.COUNTS_PER_RADIAN) - self.joint_offsets[idx]
-                elif sdo_res.index in [0x606c, 0x686c]:
-                    if val > 0x7FFFFFFF: val -= 0x100000000
-                    self.current_velocities[idx] = val / self.VELOCITY_COUNTS_PER_RADIAN
-                elif sdo_res.index in [0x6041, 0x6841]:
-                    self.status_words[idx] = val
-                elif sdo_res.index in [0x6078, 0x6878]:
-                    # 전류 값 파싱 (1000 = Rated Current 기준 비율 혹은 mA 단위)
-                    if val > 0x7FFFFFFF: val -= 0x100000000
-                    self.actual_currents[idx] = float(val)
+                    if sdo_res.index in [0x6064, 0x6864]:
+                        self.raw_positions[idx] = val
+                        self.current_positions[idx] = (val / self.COUNTS_PER_RADIAN) - self.joint_offsets[idx]
+                    elif sdo_res.index in [0x606c, 0x686c]:
+                        self.current_velocities[idx] = val / self.VELOCITY_COUNTS_PER_RADIAN
+                    elif sdo_res.index in [0x6041, 0x6841]:
+                        self.status_words[idx] = val
+                    elif sdo_res.index in [0x6078, 0x6878]:
+                        self.actual_currents[idx] = float(val)
 
     def control_loop(self):
         """PD + Back-EMF + Stiction Compensation 제어 루프"""
@@ -163,24 +166,17 @@ class RealWelconPDDriver(Node):
         perf_data = [] # PlotJuggler용 통합 데이터 리스트
         
         for i, (node_id, axis) in enumerate(self.real_axes):
-            # 조인트 3 (Node 2) 고장 보호: 전압 인가 원천 차단
-            if node_id == 2:
-                self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(node_id, 0, axis))
-                self.applied_voltages[i] = 0.0
-                continue
-
             # --- 자동 상태 복구 로직 ---
             # Statusword의 비트 3(Fault)이 1이거나, Operation Enabled 상태가 아니면 다시 활성화 시도
             status = self.status_words[i]
             if (status & 0x08): # Fault 상태인 경우
                 if self.log_counter % 10 == 0:
-                    self.get_logger().warn(f"Joint {node_id} Fault or Disabled (Stat: {hex(status)}). Re-enabling...")
-                    self.get_logger().warn(f"Joint {node_id} FAULT (Stat: {hex(status)}). Resetting...")
+                    self.get_logger().warn(f"Joint {self.joint_names[i]} (Node {node_id} Ax {axis}) FAULT (Stat: {hex(status)}). Resetting...")
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.FAULT_RESET))
                 continue
             elif not (status & 0x04): # Operation Enabled가 아닌 경우
                 if self.log_counter % 10 == 0:
-                    self.get_logger().warn(f"Joint {node_id} Disabled (Stat: {hex(status)}). Enabling...")
+                    self.get_logger().warn(f"Joint {self.joint_names[i]} (Node {node_id} Ax {axis}) Disabled (Stat: {hex(status)}). Enabling...")
                 # Shutdown(0x06) -> Switch On(0x07) -> Enable Operation(0x0F) 순차 실행 필요 시
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.SHUTDOWN))
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.SWITCH_ON))

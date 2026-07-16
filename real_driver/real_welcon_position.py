@@ -20,31 +20,28 @@ class RealWelconPositionDriver(Node):
         self.joint_pub = self.create_publisher(JointState, 'joint_states', 10)
         
         # 2. 제어 변수 정의
-        self.joint_names = ['joint1', 'joint3', 'joint5']
-        self.target_positions = [0.0] * 3  
-        self.current_positions = [0.0] * 3 
-        self.current_velocities = [0.0] * 3
-        self.applied_voltages = [0.0] * 3
-        self.error_integral = [0.0] * 3  # I 제어를 위한 오차 누적분
-        self.status_words = [0] * 3       # 드라이버 상태 모니터링
+        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4']
+        self.target_positions = [0.0] * 4  
+        self.current_positions = [0.0] * 4 
+        self.current_velocities = [0.0] * 4
+        self.applied_voltages = [0.0] * 4
+        self.error_integral = [0.0] * 4  # I 제어를 위한 오차 누적분
+        self.status_words = [0] * 4       # 드라이버 상태 모니터링
         
         # 2.1 조인트 오프셋 설정 (Calibration 값 반영)
-        # 로봇을 일자로 폈을 때 터미널 로그의 'C' 값을 여기에 입력하세요.
-        # 여기에 Raw 값을 넣으면, Current Position(C)이 0.0으로 정렬됩니다.
-        # -955/740 = -1.2905, -337/740 = -0.4554
-        self.joint_offsets = [-1.2905, 0.0, -0.4554]
-        self.raw_positions = [0.0] * 3 # 오프셋 적용 전 값 모니터링용
+        self.joint_offsets = [0.0] * 4
+        self.raw_positions = [0.0] * 4 # 오프셋 적용 전 값 모니터링용
 
         # 2.2 조인트 방향 설정 (1.0: 정방향, -1.0: 역방향)
-        # RViz에서 로봇이 반대로 움직인다면 해당 조인트를 -1.0으로 바꾸세요.
-        self.joint_directions = [1.0, 1.0, 1.0]
-
+        self.joint_directions = [1.0, 1.0, 1.0, 1.0]
+ 
         # 2.2 조인트 안전 한계 설정 (단위: Radian, 예: -1.57 ~ 1.57)
-        self.joint_min_limits = [-0.5, -1.57, -1.57]
-        self.joint_max_limits = [0.425, 1.57, 1.57]
-
-        # Node ID 매핑 (Joint 1: Node 1, Joint 3: Node 2, Joint 5: Node 3)
-        self.node_to_idx = {1: 0, 2: 1, 3: 2}
+        self.joint_min_limits = [-1.57, -1.57, -1.57, -1.57]
+        self.joint_max_limits = [1.57, 1.57, 1.57, 1.57]
+ 
+        # Node-Axis 조합 매핑 인덱스용 딕셔너리 생성
+        # joint1 -> Node 3 Axis 1, joint2 -> Node 2 Axis 1, joint3 -> Node 1 Axis 1, joint4 -> Node 3 Axis 2
+        self.node_axis_to_idx = {(3, 1): 0, (2, 1): 1, (1, 1): 2, (3, 2): 3}
 
         # 3. 하드웨어 상수 및 제어 게인 설정
         self.COUNTS_PER_RADIAN = 740.0  
@@ -55,11 +52,11 @@ class RealWelconPositionDriver(Node):
         self.K_emf = 8.632 * GEAR_RATIO  # mV/(rad/s)
         
         # 제어 게인 (원하는 각도 정렬을 위해 Kp를 충분히 확보)
-        # 각 조인트의 무게와 마찰력에 따라 차등 적용 (Index 0: joint1, 1: joint3, 2: joint5)
-        self.Kp_list = [30000.0, 35000.0, 15000.0]
-        self.Ki_list = [500.0, 800.0, 200.0]             # 조인트 3 게인 하향 조정
-        self.Kd_list = [800.0, 1000.0, 500.0]             # 진동 방지를 위해 Kd도 함께 상향
-        self.stiction_offset_list = [6500.0, 6500.0, 4800.0] # 조인트 3 전압 하향 조정
+        # 각 조인트의 무게와 마찰력에 따라 차등 적용
+        self.Kp_list = [30000.0, 30000.0, 15000.0, 15000.0]
+        self.Ki_list = [500.0, 500.0, 200.0, 200.0]
+        self.Kd_list = [800.0, 800.0, 500.0, 500.0]
+        self.stiction_offset_list = [6500.0, 6500.0, 4800.0, 4800.0] # 조인트 전압 설정
         self.i_limit = 2000.0                             # I항 최대 전압 제한 (mV)
 
         self.voltage_limit = 9800.0     # 9.8V 제한
@@ -76,7 +73,7 @@ class RealWelconPositionDriver(Node):
             return
 
         # 5. 하드웨어 초기화
-        self.real_axes = [(1, 1), (2, 1), (3, 1)]
+        self.real_axes = [(3, 1), (2, 1), (1, 1), (3, 2)]
         self.init_hardware()
 
         # 50Hz 제어 루프 (20ms)
@@ -118,37 +115,39 @@ class RealWelconPositionDriver(Node):
             self.bus.send(self.protocol.make_sdo_read(node_id, status_obj))
 
         # CAN 버스에서 응답을 수집 (시간을 약간 더 확보)
-        timeout_end = time.monotonic() + 0.008  # 8ms 동안 버퍼 확인
+        timeout_end = time.monotonic() + 0.020  # 20ms 동안 버퍼 확인
         while time.monotonic() < timeout_end:
             frame = self.bus.recv(timeout=0.001)
             if frame is None: continue
             
             sdo_res = self.protocol.parse_sdo_response(frame)
-            if sdo_res and sdo_res.value is not None and sdo_res.node_id in self.node_to_idx:
-                idx = self.node_to_idx[sdo_res.node_id]
-                val = sdo_res.value
-                
-                if sdo_res.abort_code:
-                    self.get_logger().error(f"Node {sdo_res.node_id} SDO Error: {hex(sdo_res.abort_code)}")
+            if sdo_res and sdo_res.value is not None:
+                node_id = sdo_res.node_id
+                axis = 1 if sdo_res.index in [0x6064, 0x606c, 0x6041] else 2 if sdo_res.index in [0x6864, 0x686c, 0x6841] else None
+                if axis is not None and (node_id, axis) in self.node_axis_to_idx:
+                    idx = self.node_axis_to_idx[(node_id, axis)]
+                    val = sdo_res.value
+                    
+                    if sdo_res.abort_code:
+                        self.get_logger().error(f"Node {sdo_res.node_id} Axis {axis} SDO Error: {hex(sdo_res.abort_code)}")
 
-                if val > 0x7FFFFFFF: val -= 0x100000000
-                
-                # 위치 데이터 업데이트
-                if sdo_res.index in [0x6064, 0x6864]:
-                    raw_pos = (val / self.COUNTS_PER_RADIAN)
-                    self.raw_positions[idx] = raw_pos
-                    # 방향과 오프셋을 적용하여 실제 각도 계산
-                    self.current_positions[idx] = (raw_pos - self.joint_offsets[idx]) * self.joint_directions[idx]
-                # 속도 데이터 업데이트 (이 부분이 있어야 Kd 제어가 작동함)
-                elif sdo_res.index in [0x606c, 0x686c]:
                     if val > 0x7FFFFFFF: val -= 0x100000000
-                    self.current_velocities[idx] = val / self.VELOCITY_COUNTS_PER_RADIAN
-                # 상태 워드(Statusword) 읽기 추가
-                elif sdo_res.index in [0x6041, 0x6841]:
-                    self.status_words[idx] = val
-                    # 비트 3(Fault) 확인
-                    if val & 0x08:
-                        self.get_logger().error(f"Joint {idx+1} (Node {sdo_res.node_id}) is in FAULT state!")
+                    
+                    # 위치 데이터 업데이트
+                    if sdo_res.index in [0x6064, 0x6864]:
+                        raw_pos = (val / self.COUNTS_PER_RADIAN)
+                        self.raw_positions[idx] = raw_pos
+                        # 방향과 오프셋을 적용하여 실제 각도 계산
+                        self.current_positions[idx] = (raw_pos - self.joint_offsets[idx]) * self.joint_directions[idx]
+                    # 속도 데이터 업데이트 (이 부분이 있어야 Kd 제어가 작동함)
+                    elif sdo_res.index in [0x606c, 0x686c]:
+                        self.current_velocities[idx] = val / self.VELOCITY_COUNTS_PER_RADIAN
+                    # 상태 워드(Statusword) 읽기 추가
+                    elif sdo_res.index in [0x6041, 0x6841]:
+                        self.status_words[idx] = val
+                        # 비트 3(Fault) 확인
+                        if val & 0x08:
+                            self.get_logger().error(f"Joint {self.joint_names[idx]} (Node {sdo_res.node_id}) is in FAULT state!")
 
     def control_loop(self):
         self.update_feedback()
@@ -160,7 +159,7 @@ class RealWelconPositionDriver(Node):
             status = self.status_words[i]
             if (status & 0x08) or not (status & 0x04):
                 if self.log_counter == 0:
-                    self.get_logger().warn(f"Joint {node_id} stat {hex(status)}: Resetting/Enabling...")
+                    self.get_logger().warn(f"Joint {self.joint_names[i]} (Node {node_id} Ax {axis}) stat {hex(status)}: Resetting/Enabling...")
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.FAULT_RESET))
                 self.bus.send(self.protocol.make_axis_controlword_sdo(node_id, axis, Cia402Controlword.ENABLE_OPERATION))
 

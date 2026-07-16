@@ -8,40 +8,10 @@ import sys
 import select
 import termios
 import tty
-import csv
-from datetime import datetime
 import os
 import numpy as np
 from std_msgs.msg import Float64, Float64MultiArray
-
-# =========================================================================
-# [⚙️ 해결 방법 1: 패키지 라이브러리 경로 절대 추적 알고리즘 반영]
-# =========================================================================
-current_dir = os.path.dirname(os.path.abspath(__file__)) # real_driver 폴더
-workspace_dir = os.path.dirname(current_dir)             # arm_lab_control 폴더
-
-# 1. kitech_v1 폴더 내부를 직접 참조할 수 있도록 경로 등록
-kitech_path = os.path.join(workspace_dir, "kitech_v1")
-if kitech_path not in sys.path:
-    sys.path.append(kitech_path)
-
-# 2. 혹시 모를 상위 패키지 참조 형태 분기를 위해 workspace 자체도 함께 등록
-if workspace_dir not in sys.path:
-    sys.path.append(workspace_dir)
-
-# =========================================================================
-# [📡 하위 모듈 Import] - 경로 등록 직후 수행해야 정상 로드됩니다.
-# =========================================================================
-try:
-    from motor_control.can_bus import SocketCanBus
-    from motor_control.cia402 import Cia402Protocol, Cia402Object, Cia402Controlword
-except ModuleNotFoundError as e:
-    print("\n❌ 여전히 패키지를 찾지 못했습니다. 디렉토리 구조를 확인해 주세요!")
-    print(f"현재 탐색된 Workspace: {workspace_dir}")
-    print(f"현재 탐색된 kitech_v1 경로: {kitech_path}\n")
-    raise e
-
-CAN_CHANNEL = "can0" 
+from sensor_msgs.msg import JointState
 
 def kbhit():
     dr, dw, de = select.select([sys.stdin], [], [], 0.0)
@@ -61,11 +31,12 @@ class KitechMultiJointController(Node):
         self.K_emf_count = self.K_emf_rad / self.COUNTS_PER_RADIAN            
         self.voltage_limit = 9500.0      # 최대 인가 전압 한계 (mV)
         
-        # 조인트별 하드웨어 정보 매핑 데이터 테이블 반영 (Node 1, 2, 3)
+        # 조인트별 하드웨어 정보 매핑 데이터 테이블 (Node 1, 2, 3, 4)
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': -1250.0, 'FLEX': -540.0, 'EXT': -2000.0},
-            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': 510.0,  'FLEX': 1619.0, 'EXT': -290.0}, 
-            'j3': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -337.0, 'FLEX': 824.0,  'EXT': -1313.0} 
+            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -218.0, 'FLEX': 806.0, 'EXT': -1242.0},
+            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': -995.0,  'FLEX': -655.0, 'EXT': -1335.0}, 
+            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': 627.0, 'FLEX': 1651.0,  'EXT': -397.0},
+            'j4': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -360.0, 'FLEX': 664.0, 'EXT': -1384.0} 
         }
         
         # 제어 게인 및 불감대 세팅 (0.5도 요청 반영)
@@ -73,7 +44,7 @@ class KitechMultiJointController(Node):
         self.Kd = 15.0         
         self.Ki = 0.5          
         self.Ki_limit = 500.0  
-        self.DEADZONE_DEG = 0.5
+        self.DEADZONE_DEG = 3.0
         self.DEADZONE_THRESH_COUNT = self.DEADZONE_DEG * self.PULSES_PER_DEGREE
 
         self.LOOP_RATE = 50.0            
@@ -86,12 +57,12 @@ class KitechMultiJointController(Node):
         self.input_buffer = ""
         self.last_loop_time = time.monotonic()
         self.cycle_time_ms = 0.0
-        self.is_hardware_ready = False
         self.init_retry_counter = 0
+        self.received_first_feedback = False
 
         # 각 조인트 상태 트래킹용 딕셔너리
         self.joint_states = {}
-        for j_key in ['j1', 'j2', 'j3']:
+        for j_key in ['j1', 'j2', 'j3', 'j4']:
             self.joint_states[j_key] = {
                 'target_count': self.JOINT_CONFIG[j_key]['ALIGN'], 
                 'current_count': self.JOINT_CONFIG[j_key]['ALIGN'],
@@ -104,59 +75,47 @@ class KitechMultiJointController(Node):
         self.old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
 
-        # ROS 2 Publisher & Subscriber
+        # ----------------------------------------------------------------------
+        # [📡 ROS 2 Publisher & Subscriber 정의]
+        # ----------------------------------------------------------------------
+        # 상태 로깅용 토픽
         self.pub_status = self.create_publisher(Float64MultiArray, '/multi_joint_status', 10)
+        # 드라이버 전송용 전압 제어 토픽
+        self.pub_voltage = self.create_publisher(Float64MultiArray, '/joint_voltage_cmd', 10)
+        
+        # 라디안 제어 명령 구독 토픽
         self.sub_j1 = self.create_subscription(Float64, '/j1_target_rad', lambda msg: self.ros_callback(msg, 'j1'), 10)
         self.sub_j2 = self.create_subscription(Float64, '/j2_target_rad', lambda msg: self.ros_callback(msg, 'j2'), 10)
         self.sub_j3 = self.create_subscription(Float64, '/j3_target_rad', lambda msg: self.ros_callback(msg, 'j3'), 10)
+        self.sub_j4 = self.create_subscription(Float64, '/j4_target_rad', lambda msg: self.ros_callback(msg, 'j4'), 10)
 
-        # CiA402 통신 객체 할당
-        self.protocol = Cia402Protocol()
-        self.pos_obj = Cia402Object(0x6064)
-        self.vel_obj = Cia402Object(0x606c)
-        self.status_obj = Cia402Object(0x6041)
+        # 드라이버 피드백 구독 토픽
+        self.sub_feedback = self.create_subscription(
+            JointState, 
+            '/joint_states_raw', 
+            self.feedback_callback, 
+            10
+        )
 
-        try:
-            self.can_bus_context = SocketCanBus(CAN_CHANNEL, receive_timeout=0.0)
-            self.bus = self.can_bus_context.__enter__()
-            self.get_logger().info(f"✅ CAN 연결 성공: {CAN_CHANNEL}")
-        except Exception as e:
-            self.get_logger().error(f"❌ CAN 연결 실패: {e}")
-            self.bus = None
+        # 피드백 수신 즉시 제어 연산을 실행하므로 타이머는 생성하지 않습니다.
 
-        self.timer = self.create_timer(self.dt, self.control_loop)
-
-    def init_all_joints_hardware(self):
-        """3개 노드의 하드웨어를 순차적으로 CiA402 통신 활성화"""
-        nmt_frame = self.protocol.make_nmt_start(0)
-        self.bus.send(nmt_frame)
-        time.sleep(0.05)
-
-        for j_key, cfg in self.JOINT_CONFIG.items():
-            node = cfg['NODE_ID']
-            axis = cfg['AXIS']
-            self.bus.send(self.protocol.make_axis_mode_sdo(node, axis, -11)) 
-            time.sleep(0.02)
-            for ctrl in [Cia402Controlword.FAULT_RESET, Cia402Controlword.SHUTDOWN, 
-                         Cia402Controlword.SWITCH_ON, Cia402Controlword.ENABLE_OPERATION]:
-                self.bus.send(self.protocol.make_axis_controlword_sdo(node, axis, ctrl))
-                time.sleep(0.02)
-
-        # 각 노드의 초기 엔코더 위치 실시간 동기화
-        for j_key, cfg in self.JOINT_CONFIG.items():
-            self.bus.send(self.protocol.make_sdo_read(cfg['NODE_ID'], self.pos_obj))
-            time.sleep(0.02)
-            deadline = time.monotonic() + 0.2
-            while time.monotonic() < deadline:
-                frame = self.bus.recv(timeout=0.005)
-                if frame and frame.can_id == 0x580 + cfg['NODE_ID']:
-                    sdo_res = self.protocol.parse_sdo_response(frame)
-                    if sdo_res and sdo_res.index == 0x6064 and sdo_res.value is not None:
-                        val = sdo_res.value
-                        if val > 0x7FFFFFFF: val -= 0x100000000
-                        self.joint_states[j_key]['current_count'] = float(val)
-                        self.joint_states[j_key]['target_count'] = float(val) 
-                        break
+    def feedback_callback(self, msg: JointState):
+        """드라이버 노드로부터 실시간 엔코더 및 상태 정보 업데이트"""
+        is_first = not self.received_first_feedback
+        for i, name in enumerate(msg.name):
+            if name in self.joint_states:
+                self.joint_states[name]['current_count'] = msg.position[i]
+                self.joint_states[name]['velocity_raw'] = msg.velocity[i]
+                self.joint_states[name]['status_word'] = int(msg.effort[i])
+                
+                # 처음 피드백을 수신했을 때, 목표 위치를 현재 실제 위치로 동기화하여 갑작스러운 기동(Jerk) 방지
+                if is_first:
+                    self.joint_states[name]['target_count'] = msg.position[i]
+                    
+        self.received_first_feedback = True
+        
+        # 피드백을 수신할 때마다 제어 루프를 즉시 동기 실행하여 통신 지연 최소화
+        self.control_loop()
 
     def ros_callback(self, msg, joint_key):
         """ROS 라디안 토픽 각도 제어 변환"""
@@ -178,15 +137,10 @@ class KitechMultiJointController(Node):
         self.joint_states[joint_key]['target_count'] = float(clamped)
 
     def control_loop(self):
-        if self.bus is None: return
-
-        if not self.is_hardware_ready:
+        # 1. 하드웨어 드라이버로부터 첫 피드백이 올 때까지 제어 정지 대기
+        if not self.received_first_feedback:
             if self.init_retry_counter % 50 == 0:
-                try:
-                    self.init_all_joints_hardware()
-                    self.is_hardware_ready = True
-                    self.get_logger().info("🔥 전체 멀티 관절 노드 준비 완료! (j1, j2, j3 모드 대기)")
-                except Exception as e: pass
+                self.get_logger().info("⏳ Waiting for hardware driver feedback (/joint_states_raw)...")
             self.init_retry_counter += 1
             return
 
@@ -201,7 +155,7 @@ class KitechMultiJointController(Node):
                     user_input = self.input_buffer.strip().lower()
                     self.input_buffer = ""
                     
-                    if user_input in ['j1', 'j2', 'j3']:
+                    if user_input in ['j1', 'j2', 'j3', 'j4']:
                         self.active_mode = user_input
                         self.get_logger().info(f"🔄 제어 모드가 변경되었습니다 ➡️ [{self.active_mode.upper()} 모드]")
                     elif user_input:
@@ -217,36 +171,18 @@ class KitechMultiJointController(Node):
                 else: self.input_buffer += char
             except: pass
 
-        # SDO 데이터 일괄 수집
-        for j_key, cfg in self.JOINT_CONFIG.items():
-            self.bus.send(self.protocol.make_sdo_read(cfg['NODE_ID'], self.pos_obj))
-            self.bus.send(self.protocol.make_sdo_read(cfg['NODE_ID'], self.vel_obj))
-            self.bus.send(self.protocol.make_sdo_read(cfg['NODE_ID'], self.status_obj))
-            
-        timeout_end = time.monotonic() + 0.006
-        while time.monotonic() < timeout_end:
-            try:
-                frame = self.bus.recv(timeout=0.001)
-                if frame is None: continue
-                node_id = frame.can_id - 0x580
-                sdo_res = self.protocol.parse_sdo_response(frame)
-                if sdo_res and sdo_res.value is not None:
-                    for j_key, cfg in self.JOINT_CONFIG.items():
-                        if cfg['NODE_ID'] == node_id:
-                            val = sdo_res.value
-                            if val > 0x7FFFFFFF: val -= 0x100000000
-                            if sdo_res.index == 0x6064: self.joint_states[j_key]['current_count'] = float(val)
-                            elif sdo_res.index == 0x606c: self.joint_states[j_key]['velocity_raw'] = float(val)
-                            elif sdo_res.index == 0x6041: self.joint_states[j_key]['status_word'] = val
-            except: pass
-
-        # 3개 관절 독립 병렬 PI-D + Feedforward 연산 및 명령 송신
+        # 2. 4개 관절 독립 병렬 PI-D + Feedforward 연산 진행 및 명령 발행
         ros_log_data = []
-        for j_key, cfg in self.JOINT_CONFIG.items():
+        voltage_cmd_data = []
+        
+        for j_key in ['j1', 'j2', 'j3', 'j4']:
+            cfg = self.JOINT_CONFIG[j_key]
             state = self.joint_states[j_key]
             
+            # 드라이버 레벨에서 FAULT 복구 시퀀스를 돌리므로, FAULT 상태 해제까지 대기 (전압 0mV 인가)
             if (state['status_word'] & 0x08):
-                self.bus.send(self.protocol.make_axis_controlword_sdo(cfg['NODE_ID'], cfg['AXIS'], Cia402Controlword.FAULT_RESET))
+                voltage_cmd_data.append(0.0)
+                ros_log_data.extend([0.0, 0.0])
                 continue
 
             error_count = state['target_count'] - state['current_count']
@@ -254,22 +190,28 @@ class KitechMultiJointController(Node):
             # 1) 미분 성분 (Derivative on Feedback)
             v_d = -self.Kd * state['velocity_raw']
             
-            # 2) 0.5도 정밀 불감대 제어 및 적분 누수
+            # 2) 1.0도 정밀 불감대 제어 및 전압 즉시 차단 (진동 방지)
             if abs(error_count) <= self.DEADZONE_THRESH_COUNT:
-                state['error_integral'] *= 0.95
+                state['error_integral'] = 0.0
                 v_p = 0.0
+                v_i = 0.0
+                v_d = 0.0
+                v_emf = 0.0
+                total_voltage = 0.0
             else:
                 v_p = self.Kp * error_count
                 state['error_integral'] += error_count * self.dt
-                state['error_integral'] = max(-self.Ki_limit/self.Ki, min(self.Ki_limit/self.Ki, state['error_integral']))
+                # Anti-Windup 클리핑 기법 적용 (Ki=0일 때 분모가 0이 되는 것을 방지)
+                if self.Ki != 0.0:
+                    state['error_integral'] = max(-self.Ki_limit/self.Ki, min(self.Ki_limit/self.Ki, state['error_integral']))
+                else:
+                    state['error_integral'] = 0.0  # Ki=0일 때는 적분 자체를 누적하지 않음
                 
-            v_i = self.Ki * state['error_integral']
-            
-            # 3) Back-EMF Feedforward 전방 보상
-            v_emf = self.K_emf_count * state['velocity_raw']
-            
-            # 4) 전압 합성 및 물리 가드 한계 안전 조치
-            total_voltage = v_p + v_i + v_d + v_emf
+                v_i = self.Ki * state['error_integral']
+                # 3) Back-EMF Feedforward 전방 보상
+                v_emf = self.K_emf_count * state['velocity_raw']
+                # 4) 전압 합성 및 물리 가드 한계 안전 조치
+                total_voltage = v_p + v_i + v_d + v_emf
             
             min_lim = min(cfg['FLEX'], cfg['EXT'])
             max_lim = max(cfg['FLEX'], cfg['EXT'])
@@ -279,30 +221,42 @@ class KitechMultiJointController(Node):
                 state['error_integral'] = 0.0
 
             clamped_voltage = max(-self.voltage_limit, min(self.voltage_limit, total_voltage))
-            self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(cfg['NODE_ID'], int(clamped_voltage), cfg['AXIS']))
+            voltage_cmd_data.append(float(clamped_voltage))
 
             real_deg = (state['current_count'] - cfg['ALIGN']) / self.PULSES_PER_DEGREE
             ros_log_data.extend([real_deg, clamped_voltage])
 
-        # ROS 상태 토픽 발행
-        status_msg = Float64MultiArray(); status_msg.data = ros_log_data; self.pub_status.publish(status_msg)
+        # 3. 전압 제어 명령 토픽 발행
+        volt_msg = Float64MultiArray()
+        volt_msg.data = voltage_cmd_data
+        self.pub_voltage.publish(volt_msg)
 
-        # 인터페이스 리프레시 출력
+        # 4. ROS 상태 로깅 토픽 발행
+        status_msg = Float64MultiArray()
+        status_msg.data = ros_log_data
+        self.pub_status.publish(status_msg)
+
+        # 5. 인터페이스 리프레시 출력
         sys.stdout.write(
             f"\r 🟢 [현재모드: {self.active_mode.upper()}] | "
             f"J1_deg: {(self.joint_states['j1']['current_count']-self.JOINT_CONFIG['j1']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}° | "
             f"J2_deg: {(self.joint_states['j2']['current_count']-self.JOINT_CONFIG['j2']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}° | "
             f"J3_deg: {(self.joint_states['j3']['current_count']-self.JOINT_CONFIG['j3']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}° | "
+            f"J4_deg: {(self.joint_states['j4']['current_count']-self.JOINT_CONFIG['j4']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}° | "
             f"입력창 ➡️ {self.input_buffer}"
         )
         sys.stdout.flush()
 
     def shutdown_hook(self):
-        for j_key, cfg in self.JOINT_CONFIG.items():
-            try: self.bus.send(self.protocol.make_q_axis_voltage_mv_sdo(cfg['NODE_ID'], 0, cfg['AXIS']))
-            except: pass
+        self.get_logger().info("🛑 Shutting down controller... Sending stop command to driver.")
+        try:
+            # 안전을 위해 모든 조인트 전압 0mV로 정지 명령 송신
+            volt_msg = Float64MultiArray()
+            volt_msg.data = [0.0, 0.0, 0.0, 0.0]
+            self.pub_voltage.publish(volt_msg)
+        except Exception:
+            pass
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
-        if self.bus: self.can_bus_context.__exit__(None, None, None)
 
 def main(args=None):
     rclpy.init(args=args)

@@ -34,22 +34,23 @@ class FingerBendSequenceController(Node):
         # 조인트별 하드웨어 정보 매핑 데이터 테이블 (Node 1, 2, 3, 4)
         # j2의 EXT는 사용자가 업데이트한 -1278.0 값을 반영합니다.
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -218.0, 'FLEX': 806.0, 'EXT': -1242.0},
-            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': -995.0,  'FLEX': -655.0, 'EXT': -1335.0}, 
-            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': 627.0, 'FLEX': 1651.0,  'EXT': -397.0},
-            'j4': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -360.0, 'FLEX': 664.0, 'EXT': -1384.0} 
+            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -214.0, 'FLEX': 806.0, 'EXT': -1242.0},
+            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': -1008.0, 'FLEX': -655.0, 'EXT': -1335.0}, 
+            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': 596.0, 'FLEX': 1651.0,  'EXT': -397.0},
+            'j4': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -388.0, 'FLEX': 664.0, 'EXT': -1384.0} 
         }
         
-        # 제어 게인 및 불감대 세팅 (3도 요청 반영)
-        self.Kp = 350.0
-        self.Kd = 15.0         
-        self.Ki = 0.5          
-        self.Ki_limit = 500.0  
-        self.DEADZONE_DEG = 3.0
-        self.DEADZONE_THRESH_COUNT = self.DEADZONE_DEG * self.PULSES_PER_DEGREE
+        # 제어 게인 및 불감대 세팅 (조인트별 개별 설정 적용)
+        self.GAIN_CONFIG = {
+            'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 800.0},
+            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0},
+            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 800.0, 'DEADZONE_DEG': 1.5, 'FRICT_COMP': 1200.0}, # 뻑뻑한 조인트3 전용 마찰 보상 세팅
+            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0}
+        }
 
         self.LOOP_RATE = 50.0            
         self.dt = 1.0 / self.LOOP_RATE
+        self.LPF_ALPHA = 0.25            # test_3node.py 필터 계수 적용 (25% 주입)
         
         # ----------------------------------------------------------------------
         # [🔄 실시간 상태 및 시퀀스 변수 초기화]
@@ -61,7 +62,7 @@ class FingerBendSequenceController(Node):
         self.cycle_time_ms = 0.0
         self.init_retry_counter = 0
         self.received_first_feedback = False
-
+ 
         # 각 조인트 상태 트래킹용 딕셔너리
         self.joint_states = {}
         for j_key in ['j1', 'j2', 'j3', 'j4']:
@@ -69,6 +70,7 @@ class FingerBendSequenceController(Node):
                 'target_count': self.JOINT_CONFIG[j_key]['ALIGN'], 
                 'current_count': self.JOINT_CONFIG[j_key]['ALIGN'],
                 'velocity_raw': 0.0,
+                'filtered_velocity_old': 0.0, # LPF 필터 상태 백업용
                 'status_word': 0,
                 'error_integral': 0.0
             }
@@ -175,17 +177,19 @@ class FingerBendSequenceController(Node):
         elapsed_time = time.monotonic() - self.state_start_time
 
         if self.current_state == "ALIGN":
-            # j2, j3, j4 모두 0도 정렬 (ALIGN 위치)
+            # j1(Joint 1)은 0도 고정, j2, j3, j4 모두 0도 정렬 (ALIGN 위치)
+            self.update_target_degree('j1', 0.0)
             self.update_target_degree('j2', 0.0)
             self.update_target_degree('j3', 0.0)
             self.update_target_degree('j4', 0.0)
-            if elapsed_time > 1.0:
+            if elapsed_time > 3.0:
                 self.current_state = "MOVE_J2"
                 self.state_start_time = time.monotonic()
                 self.get_logger().info("➡️ [1단계] 조인트 2 구동 시작 (0° ➡️ 20°)")
 
         elif self.current_state == "MOVE_J2":
-            self.update_target_degree('j2', -20.0)
+            self.update_target_degree('j1', 0.0)
+            self.update_target_degree('j2', 20.0)
             self.update_target_degree('j3', 0.0)
             self.update_target_degree('j4', 0.0)
             if elapsed_time > 0.3:
@@ -194,8 +198,9 @@ class FingerBendSequenceController(Node):
                 self.get_logger().info("➡️ [2단계] 조인트 3 구동 시작 (0° ➡️ 40°)")
 
         elif self.current_state == "MOVE_J3":
-            self.update_target_degree('j2', -20.0)
-            self.update_target_degree('j3', -40.0)
+            self.update_target_degree('j1', 0.0)
+            self.update_target_degree('j2', 20.0)
+            self.update_target_degree('j3', 40.0)
             self.update_target_degree('j4', 0.0)
             if elapsed_time > 0.3:
                 self.current_state = "MOVE_J4"
@@ -203,17 +208,19 @@ class FingerBendSequenceController(Node):
                 self.get_logger().info("➡️ [3단계] 조인트 4 구동 시작 (0° ➡️ 35°)")
 
         elif self.current_state == "MOVE_J4":
-            self.update_target_degree('j2', -20.0)
-            self.update_target_degree('j3', -40.0)
-            self.update_target_degree('j4', -35.0)
+            self.update_target_degree('j1', 0.0)
+            self.update_target_degree('j2', 20.0)
+            self.update_target_degree('j3', 40.0)
+            self.update_target_degree('j4', 35.0)
             if elapsed_time > 0.3:
                 self.current_state = "HOLD"
                 self.get_logger().info("✅ [시퀀스 완료] j2=20°, j3=40°, j4=35° 파지 포즈 수렴 완료.")
 
         elif self.current_state == "HOLD":
-            self.update_target_degree('j2', -20.0)
-            self.update_target_degree('j3', -40.0)
-            self.update_target_degree('j4', -35.0)
+            self.update_target_degree('j1', 0.0)
+            self.update_target_degree('j2', 20.0)
+            self.update_target_degree('j3', 40.0)
+            self.update_target_degree('j4', 35.0)
 
         # ----------------------------------------------------------------------
         # 🎯 4개 관절 독립 병렬 PI-D + Feedforward 연산 진행 및 명령 발행
@@ -233,31 +240,46 @@ class FingerBendSequenceController(Node):
 
             error_count = state['target_count'] - state['current_count']
             
-            # 1) 미분 성분 (Derivative on Feedback)
-            v_d = -self.Kd * state['velocity_raw']
+            # 조인트별 개별 게인 및 마찰보상 매핑 적용
+            gc = self.GAIN_CONFIG[j_key]
+            kp = gc['Kp']
+            kd = gc['Kd']
+            ki = gc['Ki']
+            ki_limit = gc['Ki_limit']
+            deadzone_thresh = gc['DEADZONE_DEG'] * self.PULSES_PER_DEGREE
+            frict_comp = gc['FRICT_COMP']
             
-            # 2) 정밀 불감대 제어 및 전압 즉시 차단 (진동 방지)
-            if abs(error_count) <= self.DEADZONE_THRESH_COUNT:
+            # LPF (저역통과필터) 연산 수행 (test_3node.py 방식)
+            filtered_velocity = (self.LPF_ALPHA * state['velocity_raw']) + ((1.0 - self.LPF_ALPHA) * state['filtered_velocity_old'])
+            state['filtered_velocity_old'] = filtered_velocity
+            
+            # 1) 미분 성분 (Derivative on Feedback) 및 EMF 보상 (필터링된 속도 사용)
+            v_d = -kd * filtered_velocity
+            v_emf = self.K_emf_count * filtered_velocity
+            
+            # 2) 정밀 불감대 제어 및 백래시 방지용 Tail 제어
+            if abs(error_count) <= deadzone_thresh:
                 state['error_integral'] = 0.0
-                v_p = 0.0
-                v_i = 0.0
-                v_d = 0.0
-                v_emf = 0.0
-                total_voltage = 0.0
+                active_direction = np.sign(filtered_velocity if filtered_velocity != 0.0 else error_count)
+                if active_direction != 0:
+                    v_stiction_tail = (frict_comp * 0.8) * active_direction
+                else:
+                    v_stiction_tail = 0.0
+                total_voltage = v_d + v_emf + v_stiction_tail
             else:
-                v_p = self.Kp * error_count
+                v_p = kp * error_count
                 state['error_integral'] += error_count * self.dt
                 # Anti-Windup 클리핑 기법 적용
-                if self.Ki != 0.0:
-                    state['error_integral'] = max(-self.Ki_limit/self.Ki, min(self.Ki_limit/self.Ki, state['error_integral']))
+                if ki != 0.0:
+                    state['error_integral'] = max(-ki_limit/ki, min(ki_limit/ki, state['error_integral']))
                 else:
                     state['error_integral'] = 0.0
                 
-                v_i = self.Ki * state['error_integral']
-                # 3) Back-EMF Feedforward 전방 보상
-                v_emf = self.K_emf_count * state['velocity_raw']
+                v_i = ki * state['error_integral']
+                # 3) 정마찰 보상 (Friction Compensation Offset)
+                v_frict = np.sign(error_count) * frict_comp
                 # 4) 전압 합성 및 물리 가드 한계 안전 조치
-                total_voltage = v_p + v_i + v_d + v_emf
+                total_voltage = v_p + v_i + v_d + v_emf + v_frict
             
             min_lim = min(cfg['FLEX'], cfg['EXT'])
             max_lim = max(cfg['FLEX'], cfg['EXT'])
@@ -282,16 +304,13 @@ class FingerBendSequenceController(Node):
         status_msg.data = ros_log_data
         self.pub_status.publish(status_msg)
 
-        # 5. 인터페이스 리프레시 출력
-        j2_target = (self.joint_states['j2']['target_count'] - self.JOINT_CONFIG['j2']['ALIGN']) / self.PULSES_PER_DEGREE
-        j3_target = (self.joint_states['j3']['target_count'] - self.JOINT_CONFIG['j3']['ALIGN']) / self.PULSES_PER_DEGREE
-        j4_target = (self.joint_states['j4']['target_count'] - self.JOINT_CONFIG['j4']['ALIGN']) / self.PULSES_PER_DEGREE
-
+        # 5. 인터페이스 리프레시 출력 (실시간 절대엔코더 값 / 정렬 기준값)
         sys.stdout.write(
             f"\r ⚙️ [상태: {self.current_state:8s}] | "
-            f"J2: {(self.joint_states['j2']['current_count']-self.JOINT_CONFIG['j2']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}°/{j2_target:+.1f}° | "
-            f"J3: {(self.joint_states['j3']['current_count']-self.JOINT_CONFIG['j3']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}°/{j3_target:+.1f}° | "
-            f"J4: {(self.joint_states['j4']['current_count']-self.JOINT_CONFIG['j4']['ALIGN'])/self.PULSES_PER_DEGREE:+.1f}°/{j4_target:+.1f}° | "
+            f"J1: {int(self.joint_states['j1']['current_count']):5d}/{int(self.JOINT_CONFIG['j1']['ALIGN']):5d} | "
+            f"J2: {int(self.joint_states['j2']['current_count']):5d}/{int(self.JOINT_CONFIG['j2']['ALIGN']):5d} | "
+            f"J3: {int(self.joint_states['j3']['current_count']):5d}/{int(self.JOINT_CONFIG['j3']['ALIGN']):5d} | "
+            f"J4: {int(self.joint_states['j4']['current_count']):5d}/{int(self.JOINT_CONFIG['j4']['ALIGN']):5d} | "
             f"입력: {self.input_buffer}"
         )
         sys.stdout.flush()
