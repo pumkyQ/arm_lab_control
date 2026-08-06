@@ -42,10 +42,10 @@ class FingerBendSequenceController(Node):
         
         # 제어 게인 및 불감대 세팅 (조인트별 개별 설정 적용)
         self.GAIN_CONFIG = {
-            'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 800.0},
-            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0},
-            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 800.0, 'DEADZONE_DEG': 1.5, 'FRICT_COMP': 1200.0}, # 뻑뻑한 조인트3 전용 마찰 보상 세팅
-            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 500.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0}
+            'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 800.0},
+            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0},
+            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 3.0, 'Ki_limit': 1500.0, 'DEADZONE_DEG': 1.5, 'FRICT_COMP': 1200.0}, # 뻑뻑한 조인트3 전용 마찰 보상 세팅
+            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 3.0, 'FRICT_COMP': 1000.0}
         }
 
         self.LOOP_RATE = 50.0            
@@ -98,7 +98,7 @@ class FingerBendSequenceController(Node):
         print("\n" + "=" * 60)
         print(" 🎯 KITECH 손가락 관절 순차 구동기 (Sequence Controller)")
         print(" ▶ j2, j3, j4 정렬 후 각각 20도, 40도, 35도 순차 기동")
-        print(" ▶ 's' 키: 시퀀스 시작 | 'r' 키: 리셋 | 'q' 키: 안전 종료")
+        print(" ▶ 's' 키: 굽힘 시퀀스 시작 | 'e' 키: J1 (-30°~+30°) 3회 왕복 | 'r' 키: 리셋 | 'q' 키: 안전 종료")
         print("=" * 60 + "\n")
 
     def feedback_callback(self, msg: JointState):
@@ -154,6 +154,10 @@ class FingerBendSequenceController(Node):
                             self.current_state = "ALIGN"
                             self.state_start_time = time.monotonic()
                             self.get_logger().info("🔥 [시퀀스 시작] j2, j3, j4 정렬을 시작합니다 (0°로 정렬)")
+                    elif user_input == 'e':
+                        self.current_state = "WIGGLE_J1"
+                        self.state_start_time = time.monotonic()
+                        self.get_logger().info("↔️ [J1 왕복 구동] 조인트 1번 (-30° ↔ +30°) 3회 왕복 운동 시작")
                     elif user_input == 'r':
                         self.current_state = "STANDBY"
                         for name in ['j1', 'j2', 'j3', 'j4']:
@@ -186,6 +190,28 @@ class FingerBendSequenceController(Node):
                 self.current_state = "MOVE_J2"
                 self.state_start_time = time.monotonic()
                 self.get_logger().info("➡️ [1단계] 조인트 2 구동 시작 (0° ➡️ 20°)")
+
+        elif self.current_state == "WIGGLE_J1":
+            # 1회 왕복 주기: 2.0초 (총 3회 = 6.0초)
+            wiggle_period = 2.0
+            num_cycles = 3.0
+            total_wiggle_time = wiggle_period * num_cycles
+            
+            if elapsed_time <= total_wiggle_time:
+                # 사인 파형으로 0도 기준 ±30도 부드러운 왕복 운동
+                target_j1_deg = 30.0 * np.sin(2.0 * np.pi * (1.0 / wiggle_period) * elapsed_time)
+                self.update_target_degree('j1', target_j1_deg)
+                self.update_target_degree('j2', 0.0)
+                self.update_target_degree('j3', 0.0)
+                self.update_target_degree('j4', 0.0)
+            else:
+                # 3회 왕복 완료 후 0도(ALIGN) 위치 복귀 및 HOLD
+                self.update_target_degree('j1', 0.0)
+                self.update_target_degree('j2', 0.0)
+                self.update_target_degree('j3', 0.0)
+                self.update_target_degree('j4', 0.0)
+                self.current_state = "HOLD"
+                self.get_logger().info("✅ [J1 왕복 완료] 조인트 1번 3회 왕복 구동이 완료되었습니다 (0° 원점 복귀).")
 
         elif self.current_state == "MOVE_J2":
             self.update_target_degree('j1', 0.0)
