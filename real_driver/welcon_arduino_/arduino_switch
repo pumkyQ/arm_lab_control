@@ -189,10 +189,22 @@ void updateTargetDegree(int jointIdx, float degree) {
   jointStates[jointIdx].targetCount = constrain(requestedCount, minLim, maxLim);
 }
 
-// SDO 피드백 수신 (드라이버가 비활성화/Fault 상태로 빠질 경우 자동 재활성화 유지)
+uint8_t consecutiveCanFailures = 0;
+
+void resetAndReinitCanBus() {
+  Serial.println(F("\n⚠️ [CAN 통신 경고] CAN 통신 응답 지연/누락 감지 -> MCP2515 CAN 칩 자동 재개통(Auto CAN Re-init) 중..."));
+  CAN.begin(MCP_ANY, CAN_1000KBPS, MCP_8MHZ);
+  CAN.setMode(MCP_NORMAL);
+  delay(10);
+  initHardware();
+  consecutiveCanFailures = 0;
+}
+
+// SDO 피드백 수신 (드라이버가 비활성화/Fault 상태로 빠질 경우 자동 재활성화 유지 + CAN 통신 끊김 자동 복구)
 void readJointFeedbacks() {
   statPollCounter++;
   bool pollStatus = (statPollCounter % 10 == 0); // 200ms 마다 Statusword 폴링
+  bool anyReadSuccess = false;
 
   for (int i = 0; i < 4; i++) {
     uint8_t nodeId = joints[i].nodeId;
@@ -204,6 +216,7 @@ void readJointFeedbacks() {
     // 1. 엔코더 위치 읽기 (매 루프 고속 수신)
     int32_t posVal = readSdoInt32(nodeId, posObj, 0x00, posOk);
     if (posOk) {
+      anyReadSuccess = true;
       float newPos = (float)posVal;
       jointStates[i].velocityRaw = (newPos - jointStates[i].currentCount) / DT;
       jointStates[i].currentCount = newPos;
@@ -218,6 +231,7 @@ void readJointFeedbacks() {
       bool statOk = false;
       int32_t statVal = readSdoInt32(nodeId, statObj, 0x00, statOk);
       if (statOk) {
+        anyReadSuccess = true;
         jointStates[i].statusWord = (uint16_t)(statVal & 0xFFFF);
         uint16_t status = jointStates[i].statusWord;
 
@@ -229,7 +243,16 @@ void readJointFeedbacks() {
     }
   }
 
-  receivedFirstFeedback = true;
+  // 3. CAN 통신 연속 실패 감지 및 자동 재개통 (Auto CAN Re-init)
+  if (anyReadSuccess) {
+    consecutiveCanFailures = 0;
+    receivedFirstFeedback = true;
+  } else {
+    consecutiveCanFailures++;
+    if (consecutiveCanFailures >= 10) { // 연속 10회 (200ms 동안 통신 무응답 시) CAN 칩 자동 재설정
+      resetAndReinitCanBus();
+    }
+  }
 }
 
 // 각 관절에 전압 명령(mV) SDO 전송
