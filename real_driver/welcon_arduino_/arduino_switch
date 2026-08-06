@@ -327,7 +327,7 @@ void handleSwitchInputs() {
 // =========================================================================
 void setup() {
   Serial.begin(115200);
-  while (!Serial);
+  //  while (!Serial);
 
   // 🔘 3개 푸시 스위치 핀 입력 설정 (내부 풀업 저항 활성화)
   pinMode(SW_ALIGN_PIN, INPUT_PULLUP);
