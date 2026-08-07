@@ -7,10 +7,10 @@
 const int SPI_CS_PIN = 10;
 const int CAN_INT_PIN = 2;
 
-// 🔘 3개 푸시 스위치 핀 매핑 (D5, D6, D7 -> 내부 풀업 사용, 눌림=LOW)
-const int SW_ALIGN_PIN  = 5; // 스위치 1 (D5): '정렬' (4개 관절 0° 원점 복귀)
-const int SW_BEND_PIN   = 6; // 스위치 2 (D6): 'j2~j4 굽히기' (20° -> 40° -> 35° 순차 구동)
-const int SW_WIGGLE_PIN = 7; // 스위치 3 (D7): 'j1 ±70° 3회 왕복' (j2~j4 0° 정렬 유지)
+// 🕹️ 아날로그 조이스틱 핀 매핑 (JRX, JRY -> A0, A1 / SW -> D3)
+const int JOY_X_PIN = A0;  // JRX (좌/우: 시퀀스 및 자동 왕복)
+const int JOY_Y_PIN = A1;  // JRY (상/하: J1 관절 실시간 선형 비례 제어)
+const int JOY_SW_PIN = 3;  // SW (디지털 3번 핀, 내부 풀업 사용)
 
 MCP_CAN CAN(SPI_CS_PIN); // CAN 객체 생성
 
@@ -69,7 +69,7 @@ struct JointState {
 JointState jointStates[4];
 
 // 상태 기기 (State Machine) 변수
-enum State { STANDBY, ALIGN_ONLY, BEND_SEQ, WIGGLE_J1, MOVE_J2, MOVE_J3, MOVE_J4, HOLD };
+enum State { STANDBY, ALIGN, WIGGLE_J1, MOVE_J2, MOVE_J3, MOVE_J4, HOLD };
 State currentState = STANDBY;
 unsigned long stateStartTime = 0;
 unsigned long lastLoopTime = 0;
@@ -77,16 +77,18 @@ unsigned long lastLogTime = 0;
 uint8_t statPollCounter = 0;
 bool receivedFirstFeedback = false;
 
-// 🔘 스위치 중복 트리거 및 채터링 방지 변수 (50ms 디바운스 적용)
-bool sw5Trig = false;
-bool sw6Trig = false;
-bool sw7Trig = false;
-unsigned long lastBtn5Time = 0;
-unsigned long lastBtn6Time = 0;
-unsigned long lastBtn7Time = 0;
+// 🕹️ 조이스틱 상태 및 실시간 선형 제어 변수
+bool btnTriggered = false;
+float filteredJoyTargetJ1 = 0.0f; // J1 조이스틱 실시간 목표 각도 LPF 필터 변수
+float filteredJoyFlexRatio = 0.0f; // j2, j3, j4 손가락 굽힘 비율 (0.0~1.0) LPF 필터 변수
+
+// 실수 매핑 함수 (in_min~in_max -> out_min~out_max)
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
 
 // =========================================================================
-// 🛠️ CiA402 SDO CAN 프레임 전송 및 드라이버 가동 함수들
+// 🛠️ CiA402 SDO CAN 프레임 전송 함수들
 // =========================================================================
 
 void sendNmtStart(uint8_t nodeId = 0) {
@@ -152,7 +154,7 @@ int32_t readSdoInt32(uint8_t nodeId, uint16_t index, uint8_t subindex, bool &suc
 }
 
 // =========================================================================
-// 🚀 하드웨어 초기화 및 드라이버 가동 유지 함수
+// 🚀 하드웨어 초기화 및 드라이버 가동 유지 (휴면방지)
 // =========================================================================
 void enableNodeAxis(uint8_t nodeId, uint8_t axis) {
   uint16_t modeObj = (axis == 1) ? 0x6060 : 0x6860;
@@ -169,13 +171,12 @@ void enableNodeAxis(uint8_t nodeId, uint8_t axis) {
 }
 
 void initHardware() {
-  Serial.println(F("▶ Welcon 모터 드라이버 (j1, j2, j4) 초기화 및 Operation Enable 진행 중..."));
+  Serial.println(F("▶ Welcon 모터 드라이버 (j1~j4) 초기화 및 Operation Enable 진행 중..."));
   
   sendNmtStart(0);
   delay(100);
 
   for (int i = 0; i < 4; i++) {
-    if (i == 2) continue; // ⚡ 3번 관절 하드웨어 초기화 바이패스
     enableNodeAxis(joints[i].nodeId, joints[i].axis);
     delay(20);
   }
@@ -183,41 +184,29 @@ void initHardware() {
 }
 
 void updateTargetDegree(int jointIdx, float degree) {
-  float requestedCount = joints[jointIdx].alignCount + (degree * PULSES_PER_DEGREE);
+  float dir = (jointIdx == 2) ? -1.0f : 1.0f; // ⚡ 조인트 3번(j3) 굽힘 방향 음수 (-1.0f)
+  float requestedCount = joints[jointIdx].alignCount + (dir * degree * PULSES_PER_DEGREE);
   float minLim = min(joints[jointIdx].flexCount, joints[jointIdx].extCount);
   float maxLim = max(joints[jointIdx].flexCount, joints[jointIdx].extCount);
 
   jointStates[jointIdx].targetCount = constrain(requestedCount, minLim, maxLim);
 }
 
-uint8_t consecutiveCanFailures = 0;
-
-void resetAndReinitCanBus() {
-  Serial.println(F("\n⚠️ [CAN 통신 경고] MCP2515 CAN 칩 자동 재개통 중..."));
-  CAN.begin(MCP_ANY, CAN_1000KBPS, MCP_8MHZ);
-  CAN.setMode(MCP_NORMAL);
-  delay(10);
-  initHardware();
-  consecutiveCanFailures = 0;
-}
-
-// SDO 피드백 수신
+// SDO 피드백 수신 (위치 매 루프 읽기, 속도는 수치미분으로 고속 처리)
 void readJointFeedbacks() {
   statPollCounter++;
-  bool pollStatus = (statPollCounter % 10 == 0);
-  bool anyReadSuccess = false;
+  bool pollStatus = (statPollCounter % 10 == 0); // 200ms 마다 Statusword 폴링
 
   for (int i = 0; i < 4; i++) {
-    if (i == 2) continue; // ⚡ 3번 관절 피드백 수신 바이패스
     uint8_t nodeId = joints[i].nodeId;
     uint16_t posObj = (joints[i].axis == 1) ? 0x6064 : 0x6864;
     uint16_t statObj = (joints[i].axis == 1) ? 0x6041 : 0x6841;
 
     bool posOk = false;
 
+    // 1. 엔코더 위치 읽기 (매 루프 고속 수신)
     int32_t posVal = readSdoInt32(nodeId, posObj, 0x00, posOk);
     if (posOk) {
-      anyReadSuccess = true;
       float newPos = (float)posVal;
       jointStates[i].velocityRaw = (newPos - jointStates[i].currentCount) / DT;
       jointStates[i].currentCount = newPos;
@@ -227,31 +216,26 @@ void readJointFeedbacks() {
       }
     }
 
+    // 2. 상태 워드 200ms 주기 읽기 및 Fault 복구
     if (pollStatus) {
       bool statOk = false;
       int32_t statVal = readSdoInt32(nodeId, statObj, 0x00, statOk);
       if (statOk) {
         jointStates[i].statusWord = (uint16_t)(statVal & 0xFFFF);
-        if (jointStates[i].statusWord & 0x08) {
-          uint16_t ctrlObj = (joints[i].axis == 1) ? 0x6040 : 0x6840;
-          sendSdoWriteI16(nodeId, ctrlObj, 0x00, 0x0080);
+        uint16_t status = jointStates[i].statusWord;
+
+        // Fault 상태이거나 Operation Enable가 정상적으로 유지되지 않으면 재활성화
+        if ((status & 0x08) || ((status & 0x0027) != 0x0027)) {
+          enableNodeAxis(joints[i].nodeId, joints[i].axis);
         }
       }
     }
   }
 
-  if (anyReadSuccess) {
-    consecutiveCanFailures = 0;
-    receivedFirstFeedback = true;
-  } else {
-    consecutiveCanFailures++;
-    if (consecutiveCanFailures >= 10) {
-      resetAndReinitCanBus();
-    }
-  }
+  receivedFirstFeedback = true;
 }
 
-// 각 관절에 전압 명령(mV) SDO 전송 (j3 완전 바이패스 차단)
+// 각 관절에 전압 명령(mV) SDO 전송 (j3 완전 차단/바이패스)
 void sendVoltages(float voltages[4]) {
   voltages[2] = 0.0f; // ⚡ 조인트 3번(j3) 전압 0mV 차단
   for (int i = 0; i < 4; i++) {
@@ -266,54 +250,80 @@ void sendVoltages(float voltages[4]) {
 }
 
 // =========================================================================
-// 🔘 3개 푸시 스위치 입력 감지 및 모드 전환 (D5, D6, D7, 50ms 디바운스 적용)
+// 🕹️ 조이스틱 상하(JRY: J1 조종) & 좌우(JRX: 손가락 굽힘/펴짐 실시간 제어)
 // =========================================================================
-void handleSwitchInputs() {
-  unsigned long now = millis();
-  int btnAlign  = digitalRead(SW_ALIGN_PIN);  // D5 스위치 ('정렬')
-  int btnBend   = digitalRead(SW_BEND_PIN);   // D6 스위치 ('조인트 2~4번 굽히기')
-  int btnWiggle = digitalRead(SW_WIGGLE_PIN); // D7 스위치 ('조인트 1번 ±70° 3회 왕복')
+void handleJoystickInputs() {
+  int joyX = analogRead(JOY_X_PIN); // JRX (A0)
+  int joyY = analogRead(JOY_Y_PIN); // JRY (A1)
+  int swBtn = digitalRead(JOY_SW_PIN); // SW (D3, 눌림=LOW)
 
-  if (btnAlign == LOW) {
-    if (!sw5Trig && (now - lastBtn5Time > 50)) {
-      sw5Trig = true;
-      lastBtn5Time = now;
-      currentState = ALIGN_ONLY;
-      stateStartTime = now;
-      Serial.println(F("\n🔘 [스위치 1 (D5) 감지] 관절 정렬 시작!"));
+  // -----------------------------------------------------------------------
+  // 1. JRY (A1) 상/하 움직임 ➔ Joint 1 (+70° ~ -70°) 실시간 선형 비례 제어
+  // -----------------------------------------------------------------------
+  if (currentState == STANDBY || currentState == HOLD) {
+    float rawTargetJ1Deg = 0.0f;
+
+    if (joyY < 480) {
+      // 조이스틱 위로 밀 때: 0도 ➡️ +70도 선형 비례
+      rawTargetJ1Deg = mapFloat((float)joyY, 480.0f, 0.0f, 0.0f, 70.0f);
+    } else if (joyY > 544) {
+      // 조이스틱 아래로 밀 때: 0도 ➡️ -70도 선형 비례
+      rawTargetJ1Deg = mapFloat((float)joyY, 544.0f, 1023.0f, 0.0f, -70.0f);
+    } else {
+      rawTargetJ1Deg = 0.0f; // 센터 불감대 내 0도 고정
     }
-  } else {
-    if (now - lastBtn5Time > 50) {
-      sw5Trig = false;
+
+    // LPF 저역통과 필터 강도를 높여 조이스틱 반응을 더 느리게 조정
+    filteredJoyTargetJ1 = (0.08f * rawTargetJ1Deg) + (0.92f * filteredJoyTargetJ1);
+    updateTargetDegree(0, filteredJoyTargetJ1);
+
+    // -----------------------------------------------------------------------
+    // 2. JRX (A0) 좌/우 움직임 ➔ 손가락(j2, j3, j4) 굽힘/펴짐 실시간 선형 비례 제어
+    // -----------------------------------------------------------------------
+    // 왼쪽으로 꺾으면 0 -> 최대 굽힘까지 선형 증가
+    // 오른쪽으로 꺾으면 현재 값에서 0까지 선형 감소
+    // 중심에 있으면 마지막 명령을 유지하여 원점으로 되돌아가지 않음
+    float flexRatio = filteredJoyFlexRatio;
+    const float deadzone = 40.0f;
+
+    if (joyX < (480 - deadzone)) {
+      // 왼쪽: 0.0(완전 펴짐) -> 1.0(최대 굽힘)
+      flexRatio = mapFloat((float)joyX, 480.0f, 0.0f, 0.0f, 1.0f);
+    } else if (joyX > (544 + deadzone)) {
+      // 오른쪽: 현재 값에서 0.0(정렬)까지 선형 감소
+      float rightRatio = mapFloat((float)joyX, 544.0f, 1023.0f, 0.0f, 1.0f);
+      flexRatio = max(0.0f, filteredJoyFlexRatio - rightRatio);
     }
+
+    // LPF 필터 강도를 높여 손가락 굽힘/펴짐 반응을 더 느리게 조정
+    filteredJoyFlexRatio = (0.15f * flexRatio) + (0.85f * filteredJoyFlexRatio);
+
+    float targetJ2 = 35.0f * filteredJoyFlexRatio;
+    float targetJ3 = 45.0f * filteredJoyFlexRatio;
+    float targetJ4 = 70.0f * filteredJoyFlexRatio;
+
+    updateTargetDegree(1, targetJ2);
+    updateTargetDegree(2, targetJ3);
+    updateTargetDegree(3, targetJ4);
   }
 
-  if (btnBend == LOW) {
-    if (!sw6Trig && (now - lastBtn6Time > 50)) {
-      sw6Trig = true;
-      lastBtn6Time = now;
-      currentState = BEND_SEQ;
-      stateStartTime = now;
-      Serial.println(F("\n🔘 [스위치 2 (D6) 감지] 조인트 2, 4번 빠른 굽히기 시퀀스 시작!"));
+  // -----------------------------------------------------------------------
+  // 3. SW 푸시 버튼 감지 (R: 원점 리셋)
+  // -----------------------------------------------------------------------
+  if (swBtn == LOW) {
+    if (!btnTriggered) {
+      btnTriggered = true;
+      currentState = STANDBY;
+      filteredJoyTargetJ1 = 0.0f;
+      filteredJoyFlexRatio = 0.0f;
+      for (int i = 0; i < 4; i++) {
+        jointStates[i].targetCount = jointStates[i].currentCount;
+        jointStates[i].errorIntegral = 0.0f;
+      }
+      Serial.println(F("\n🕹️ [조이스틱 버튼] 대기 상태 복귀 및 원점 리셋(R)"));
     }
   } else {
-    if (now - lastBtn6Time > 50) {
-      sw6Trig = false;
-    }
-  }
-
-  if (btnWiggle == LOW) {
-    if (!sw7Trig && (now - lastBtn7Time > 50)) {
-      sw7Trig = true;
-      lastBtn7Time = now;
-      currentState = WIGGLE_J1;
-      stateStartTime = now;
-      Serial.println(F("\n🔘 [스위치 3 (D7) 감지] 조인트 1번 (±70° 3회 왕복) 구동 시작!"));
-    }
-  } else {
-    if (now - lastBtn7Time > 50) {
-      sw7Trig = false;
-    }
+    btnTriggered = false;
   }
 }
 
@@ -323,12 +333,10 @@ void handleSwitchInputs() {
 void setup() {
   Serial.begin(115200);
 
-  pinMode(SW_ALIGN_PIN,  INPUT_PULLUP);
-  pinMode(SW_BEND_PIN,   INPUT_PULLUP);
-  pinMode(SW_WIGGLE_PIN, INPUT_PULLUP);
+  pinMode(JOY_SW_PIN, INPUT_PULLUP);
 
   Serial.println(F("========================================================="));
-  Serial.println(F(" 🎯 KITECH 4축 로봇 핑거 아두이노 스위치 제어기 (j3 바이패스)"));
+  Serial.println(F(" 🎯 KITECH 4축 로봇 핑거 아두이노 J1 선형 조이스틱 제어기"));
   Serial.println(F("========================================================="));
 
   if (CAN.begin(MCP_ANY, CAN_1000KBPS, MCP_8MHZ) == CAN_OK) {
@@ -350,10 +358,11 @@ void setup() {
 
   initHardware();
 
-  Serial.println(F("▶ 3개 푸시 스위치 기능 안내:"));
-  Serial.println(F("  [스위치 1 (D5)] 🔘 : 관절 정렬 (0° 복귀)"));
-  Serial.println(F("  [스위치 2 (D6)] 🔘 : 조인트 2, 4번 빠른 굽히기 시퀀스"));
-  Serial.println(F("  [스위치 3 (D7)] 🔘 : 조인트 1번 (-70° <-> +70°) 3회 왕복 운동"));
+  Serial.println(F("▶ 조이스틱 실시간 조작 안내:"));
+  Serial.println(F("  [조이스틱  상/하] ↕️ : Joint 1 각도 실시간 선형 조종 (+70° <-> -70°)"));
+  Serial.println(F("  [조이스틱  좌/우] ↔️ : 손가락 굽힘/펴짐 실시간 선형 조종"));
+  Serial.println(F("  [조이스틱   버튼] 🔘 : 원점 리셋 (R) 실행"));
+  Serial.println(F("▶ (시리얼 모니터키 's', 'e', 'r', 'q' 입력도 동시 지원됩니다)"));
 }
 
 void loop() {
@@ -368,26 +377,31 @@ void loop() {
 
   if (!receivedFirstFeedback) return;
 
-  // 2. 🔘 3개 푸시 스위치 입력 처리 (D5, D6, D7)
-  handleSwitchInputs();
+  // 2. 🕹️ 조이스틱 실시간 입력 처리 (JRY 상하 선형 비례 제어 포함)
+  handleJoystickInputs();
 
-  // 3. 시리얼 모니터 키보드 입력 처리 (동시 지원)
+  // 3. 시리얼 모니터 입력 처리
   if (Serial.available() > 0) {
     char cmd = Serial.read();
     if (cmd == 's' || cmd == 'S') {
       if (currentState == STANDBY || currentState == HOLD) {
-        currentState = BEND_SEQ;
+        currentState = ALIGN;
         stateStartTime = millis();
-        Serial.println(F("\n🔥 [시퀀스 시작] 조인트 2, 4번 굽히기 시퀀스를 시작합니다."));
+        Serial.println(F("\n🔥 [시퀀스 시작] j2, j3, j4 정렬을 시작합니다 (0°로 정렬)"));
       }
     } else if (cmd == 'e' || cmd == 'E') {
       currentState = WIGGLE_J1;
       stateStartTime = millis();
       Serial.println(F("\n↔️ [J1 왕복 구동] 조인트 1번 (-70° <-> +70°) 3회 왕복 운동 시작"));
     } else if (cmd == 'r' || cmd == 'R') {
-      currentState = ALIGN_ONLY;
-      stateStartTime = millis();
-      Serial.println(F("\n🔄 [정렬] 대기 상태 복귀 및 정렬 위치 동기화."));
+      currentState = STANDBY;
+      filteredJoyTargetJ1 = 0.0f;
+      filteredJoyFlexRatio = 0.0f;
+      for (int i = 0; i < 4; i++) {
+        jointStates[i].targetCount = jointStates[i].currentCount;
+        jointStates[i].errorIntegral = 0.0f;
+      }
+      Serial.println(F("\n🔄 [리셋] 대기 상태 복귀 및 목표치를 현재 위치로 동기화했습니다."));
     } else if (cmd == 'q' || cmd == 'Q') {
       currentState = STANDBY;
       float zeroVolt[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -400,25 +414,15 @@ void loop() {
   float elapsedTime = (millis() - stateStartTime) / 1000.0f;
 
   switch (currentState) {
-    case ALIGN_ONLY:
+    case ALIGN:
       updateTargetDegree(0, 0.0f);
       updateTargetDegree(1, 0.0f);
       updateTargetDegree(2, 0.0f);
       updateTargetDegree(3, 0.0f);
-      if (elapsedTime > 1.0f) { // ⚡ 1.0초 빠르고 유연한 정렬
-        currentState = HOLD;
-      }
-      break;
-
-    case BEND_SEQ:
-      updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 0.0f);
-      updateTargetDegree(2, 0.0f);
-      updateTargetDegree(3, 0.0f);
-      if (elapsedTime > 0.5f) { // ⚡ 빠른 시퀀스 전환 0.5초
+      if (elapsedTime > 3.0f) {
         currentState = MOVE_J2;
         stateStartTime = millis();
-        Serial.println(F("\n➡️ [1단계] 조인트 2 구동 시작 (0° ➡️ 35°)"));
+        Serial.println(F("\n➡️ [1단계] 조인트 2 구동 시작 (0° ➡️ 20°)"));
       }
       break;
 
@@ -446,29 +450,36 @@ void loop() {
 
     case MOVE_J2:
       updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 35.0f);
+      updateTargetDegree(1, 20.0f);
       updateTargetDegree(2, 0.0f);
       updateTargetDegree(3, 0.0f);
-      if (elapsedTime > 0.5f) {
-        currentState = MOVE_J4;
+      if (elapsedTime > 0.3f) {
+        currentState = MOVE_J3;
         stateStartTime = millis();
-        Serial.println(F("\n➡️ [2단계] 조인트 4 구동 시작 (0° ➡️ 70°) (3번 관절 바이패스)"));
+        Serial.println(F("\n➡️ [2단계] 조인트 3 구동 시작 (0° ➡️ 40°)"));
       }
       break;
 
-    case MOVE_J3: // 바이패스
-      currentState = MOVE_J4;
-      stateStartTime = millis();
+    case MOVE_J3:
+      updateTargetDegree(0, 0.0f);
+      updateTargetDegree(1, 20.0f);
+      updateTargetDegree(2, 40.0f);
+      updateTargetDegree(3, 0.0f);
+      if (elapsedTime > 0.3f) {
+        currentState = MOVE_J4;
+        stateStartTime = millis();
+        Serial.println(F("\n➡️ [3단계] 조인트 4 구동 시작 (0° ➡️ 35°)"));
+      }
       break;
 
     case MOVE_J4:
       updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 35.0f);
-      updateTargetDegree(2, 0.0f);
-      updateTargetDegree(3, 70.0f);
-      if (elapsedTime > 0.5f) {
+      updateTargetDegree(1, 20.0f);
+      updateTargetDegree(2, 40.0f);
+      updateTargetDegree(3, 35.0f);
+      if (elapsedTime > 0.3f) {
         currentState = HOLD;
-        Serial.println(F("\n✅ [시퀀스 완료] j2=35°, j4=70° 빠른 파지 포즈 수렴 완료."));
+        Serial.println(F("\n✅ [시퀀스 완료] j2=20°, j3=40°, j4=35° 파지 포즈 수렴 완료."));
       }
       break;
 

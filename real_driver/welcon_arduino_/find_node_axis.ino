@@ -314,6 +314,9 @@ void loop() {
       Serial.print(F(" ➔ ⭐ Joint "));
       Serial.print(jIdx + 1);
       Serial.println(F("로 지정되었습니다!"));
+    } else if (cmd == 'r' || cmd == 'R') {
+      initHardware();
+      Serial.println(F("\n🔄 [드라이버 리셋] 모든 드라이버 Fault 해제 및 Operation Enable 강제 재동기화 완료!"));
     } else if (cmd == 'p' || cmd == 'P') {
       Serial.println(F("\n==================================================================================="));
       Serial.println(F(" 📋 [최종 생성된 JointConfig joints[4] 소스코드]"));
@@ -355,6 +358,19 @@ void loop() {
     Serial.print((int)candidates[selectedCandidateIdx].testVoltage);
     Serial.print(F("mV | Enc: "));
     Serial.print(candidates[selectedCandidateIdx].currentCount);
-    Serial.println(F(" count"));
+    Serial.print(F(" count | Status: 0x"));
+    if (candidates[selectedCandidateIdx].statusWord < 0x1000) Serial.print(F("0"));
+    if (candidates[selectedCandidateIdx].statusWord < 0x0100) Serial.print(F("0"));
+    if (candidates[selectedCandidateIdx].statusWord < 0x0010) Serial.print(F("0"));
+    Serial.print(candidates[selectedCandidateIdx].statusWord, HEX);
+
+    if (candidates[selectedCandidateIdx].statusWord & 0x08) {
+      Serial.print(F(" ❌ [FAULT 발생!]"));
+    } else if ((candidates[selectedCandidateIdx].statusWord & 0x0027) == 0x0027) {
+      Serial.print(F(" ✅ [Operation Enabled]"));
+    } else {
+      Serial.print(F(" ⚠️ [드라이버 비활성화 상태]"));
+    }
+    Serial.println();
   }
 }

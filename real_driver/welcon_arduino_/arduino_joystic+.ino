@@ -179,7 +179,7 @@ void setup() {
   Serial.println(F("  [2] : 중간 전압  +3.0V (+3000mV) 인가"));
   Serial.println(F("  [3] : 강한 전압  +6.0V (+6000mV) 인가"));
   Serial.println(F("  [4] : 최대 전압  +9.5V (+9500mV) 인가"));
-  Serial.println(F("  [+] / [-] : 전압 ±500mV 수동 미세 미세 조절"));
+  Serial.println(F("  [+] / [-] : 전압 ±500mV 수동 미세 조절"));
   Serial.println(F("  [0] 또는 [Space] : 인가 전압 0mV (즉시 정지)"));
   Serial.println(F("  [r] : 드라이버 Fault 해제 및 강제 재활성화"));
   Serial.println(F("===================================================================================\n"));
@@ -213,10 +213,10 @@ void loop() {
       Serial.println(F("\n⚡ [테스트 전압] +9.5V (+9500mV) 인가 시작"));
     } else if (cmd == '+' || cmd == '=') {
       testVoltage += 500.0f;
-      Serial.print(F("\n⚡ [전압 증부] 현재 전압: ")); Serial.print((int)testVoltage); Serial.println(F(" mV"));
+      Serial.print(F("\n⚡ [전압 증가] 현재 전압: ")); Serial.print((int)testVoltage); Serial.println(F(" mV"));
     } else if (cmd == '-' || cmd == '_') {
       testVoltage -= 500.0f;
-      Serial.print(F("\n⚡ [전압 감부] 현재 전압: ")); Serial.print((int)testVoltage); Serial.println(F(" mV"));
+      Serial.print(F("\n⚡ [전압 감소] 현재 전압: ")); Serial.print((int)testVoltage); Serial.println(F(" mV"));
     } else if (cmd == ' ' || cmd == '0') {
       testVoltage = 0.0f;
       Serial.println(F("\n🛑 [전압 차단] 인가 전압 0mV 정지"));
