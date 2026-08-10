@@ -50,14 +50,14 @@ struct JointConfig {
 
 // 4개 관절 개별 파라미터 설정 (j1 ~ j4)
 JointConfig joints[4] = {
-  // j1: Node 3, Axis 1 (Ki 조절값 반영)
-  {"j1", 3, 1, -214.0f,  806.0f, -1242.0f, 350.0f, 15.0f, 0.5f, 300.0f, 3.0f,  800.0f},
-  // j2: Node 2, Axis 1 (새 측정한 정렬 원점 -2032.0f 반영)
-  {"j2", 2, 1, -2032.0f, -655.0f, -2032.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 6.0f, 1000.0f},
-  // j3: Node 1, Axis 1 (바이패스)
-  {"j3", 1, 1, -1852.0f, -2848.0f,  -798.0f, 450.0f, 15.0f, 3.0f, 1500.0f, 1.5f, 1200.0f},
-  // j4: Node 3, Axis 2 (새 모터 측정한 원점 645.0f 반영)
-  {"j4", 3, 2,  645.0f, 1697.0f,  -351.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 3.0f, 1000.0f}
+  // j1: Node 3, Axis 1 (ALIGN 원점 -1220.0f, 구동 범위 -1220.0f ~ -990.0f)
+  {"j1", 3, 1, -1220.0f, -990.0f, -1220.0f, 350.0f, 15.0f, 0.5f, 300.0f, 2.0f,  1000.0f},
+  // j2: Node 3, Axis 2 (측정한 ALIGN 원점 -1850.0f 반영, 양수 굽힘 방향 -1000.0f)
+  {"j2", 3, 2, -1850.0f, -1000.0f, -1850.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 6.0f, 1000.0f},
+  // j3: Node 2, Axis 1 (바이패스)
+  {"j3", 2, 1, -1852.0f, -2848.0f,  -798.0f, 450.0f, 15.0f, 3.0f, 1500.0f, 1.5f, 1200.0f},
+  // j4: Node 1, Axis 1 (새 모터 측정한 원점 645.0f 반영)
+  {"j4", 1, 1,  645.0f, 1697.0f,  -351.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 3.0f, 1000.0f}
 };
 
 // 각 관절 실시간 상태 구조체
@@ -83,7 +83,7 @@ bool receivedFirstFeedback = false;
 
 // 🕹️ 조이스틱 LPF 및 트리거 변수
 bool joyBtnTriggered = false;
-float filteredJoyTargetJ1 = 0.0f; 
+float filteredJoyJ1Ratio = 0.0f; 
 float filteredJoyFlexRatio = 0.0f; 
 
 // 🔘 스위치 채터링 방지 변수 (50ms 디바운스)
@@ -366,18 +366,24 @@ void handleInputs() {
   int joySw = digitalRead(JOY_SW_PIN); // SW (D3)
 
   if (currentState == STANDBY || currentState == HOLD) {
-    // A) JRY (A1) -> Joint 1 (+70° ~ -70°)
-    float rawTargetJ1Deg = 0.0f;
-    if (joyY < 480) {
-      rawTargetJ1Deg = mapFloat((float)joyY, 480.0f, 0.0f, 0.0f, 70.0f);
-    } else if (joyY > 544) {
-      rawTargetJ1Deg = mapFloat((float)joyY, 544.0f, 1023.0f, 0.0f, -70.0f);
-    } else {
-      rawTargetJ1Deg = 0.0f;
+    // A) JRY (A1) -> 조이스틱 상/하 (아래: +방향 -990count 이동, 위: 원점 -1220count 복귀, 중앙: 위치 유지)
+    float j1Ratio = filteredJoyJ1Ratio;
+    const float deadzoneY = 40.0f;
+
+    if (joyY > (544 + deadzoneY)) {
+      // 아래로 밀 때: -1220 count (0°) -> -990 count (+20.21° / +방향 이동)
+      j1Ratio = mapFloat((float)joyY, 544.0f, 1023.0f, 0.0f, 1.0f);
+    } else if (joyY < (480 - deadzoneY)) {
+      // 위로 밀 때: 원점 (-1220 count) 방향으로 서서히 복귀
+      float upRatio = mapFloat((float)joyY, 480.0f, 0.0f, 0.0f, 1.0f);
+      j1Ratio = max(0.0f, filteredJoyJ1Ratio - upRatio);
     }
 
-    filteredJoyTargetJ1 = (0.2f * rawTargetJ1Deg) + (0.8f * filteredJoyTargetJ1);
-    updateTargetDegree(0, filteredJoyTargetJ1);
+    // LPF 필터 강도를 높여 조인트 1번 반응을 부드럽게 조정
+    filteredJoyJ1Ratio = (0.15f * j1Ratio) + (0.85f * filteredJoyJ1Ratio);
+
+    float targetJ1Deg = 20.21f * filteredJoyJ1Ratio; // 0° (-1220 count) ~ 20.21° (-990 count)
+    updateTargetDegree(0, targetJ1Deg);
 
     // B) JRX (A0) -> 조이스틱 좌/우 (좌: 굽힘, 우: 펴짐, 중앙: 마지막 위치 유지)
     float flexRatio = filteredJoyFlexRatio;
@@ -403,18 +409,18 @@ void handleInputs() {
     updateTargetDegree(3, targetJ4);
   }
 
-  // C) 조이스틱 버튼 (D3) -> 원점 및 대기 상태 리셋 (j2 = -1008.0f 정렬)
+  // C) 조이스틱 버튼 (D3) -> 원점 및 대기 상태 리셋
   if (joySw == LOW) {
     if (!joyBtnTriggered) {
       joyBtnTriggered = true;
       currentState = STANDBY;
-      filteredJoyTargetJ1 = 0.0f;
+      filteredJoyJ1Ratio = 0.0f;
       filteredJoyFlexRatio = 0.0f;
       for (int i = 0; i < 4; i++) {
-        updateTargetDegree(i, 0.0f); // ⚡ alignCount (j2: -1008.0f) 정렬 위치로 복귀
+        updateTargetDegree(i, 0.0f); // ⚡ alignCount 정렬 위치로 복귀
         jointStates[i].errorIntegral = 0.0f;
       }
-      Serial.println(F("\n🕹️ [조이스틱 버튼] 대기 상태 복귀 및 j2 = -1008° 정렬 원점 리셋"));
+      Serial.println(F("\n🕹️ [조이스틱 버튼] 대기 상태 복귀 및 원점 정렬 리셋"));
     }
   } else {
     joyBtnTriggered = false;
@@ -543,7 +549,9 @@ void loop() {
       float totalWiggleTime = wigglePeriod * numCycles;
 
       if (elapsedTime <= totalWiggleTime) {
-        float targetJ1Deg = 70.0f * sin(2.0f * PI * (1.0f / wigglePeriod) * elapsedTime);
+        // -1220 count (0°) 에서 -990 count (+20.21°) 사이 범위 내 왕복
+        float maxWiggleDeg = 20.21f;
+        float targetJ1Deg = (maxWiggleDeg / 2.0f) * (1.0f - cos(2.0f * PI * (1.0f / wigglePeriod) * elapsedTime));
         updateTargetDegree(0, targetJ1Deg);
         updateTargetDegree(1, 0.0f);
         updateTargetDegree(2, 0.0f);
@@ -554,7 +562,7 @@ void loop() {
         updateTargetDegree(2, 0.0f);
         updateTargetDegree(3, 0.0f);
         currentState = HOLD;
-        Serial.println(F("\n✅ [J1 왕복 완료] 조인트 1번 3회 왕복 구동 완료 (0° 원점 복귀)."));
+        Serial.println(F("\n✅ [J1 왕복 완료] 조인트 1번 (-1220 ~ -990 count) 3회 왕복 구동 완료."));
       }
       break;
     }
@@ -616,13 +624,8 @@ void loop() {
 
     if (abs(errorCount) <= deadzoneThresh) {
       jointStates[i].errorIntegral = 0.0f;
-      if (abs(filteredVel) > 10.0f || abs(errorCount) > (deadzoneThresh * 0.5f)) {
-        float activeDir = (filteredVel != 0.0f) ? ((filteredVel > 0) ? 1.0f : -1.0f) : ((errorCount > 0) ? 1.0f : -1.0f);
-        float vStictionTail = (joints[i].frictComp * 0.4f) * activeDir;
-        totalV = vD + vEmf + vStictionTail;
-      } else {
-        totalV = 0.0f;
-      }
+      // ⚡ 데드존 이내(정렬 허용범위 ±11 count 이내) 진입 시 고주파 지터 방지를 위해 0V 평형 정지
+      totalV = 0.0f;
     } else {
       float vP = joints[i].Kp * errorCount;
       jointStates[i].errorIntegral += errorCount * DT;
