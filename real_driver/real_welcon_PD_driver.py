@@ -40,8 +40,8 @@ class RealWelconPDDriver(Node):
         self.joint_offsets = [0.0] * 4
 
         # Node-Axis 조합 매핑 인덱스용 딕셔너리 생성
-        # joint1 -> Node 3 Axis 1, joint2 -> Node 2 Axis 1, joint3 -> Node 1 Axis 1, joint4 -> Node 3 Axis 2
-        self.node_axis_to_idx = {(3, 1): 0, (2, 1): 1, (1, 1): 2, (3, 2): 3}
+        # joint1 -> Node 3 Axis 1, joint2 -> Node 3 Axis 2, joint3 -> Node 1 Axis 1, joint4 -> Node 1 Axis 2
+        self.node_axis_to_idx = {(3, 1): 0, (3, 2): 1, (1, 1): 2, (1, 2): 3}
 
         # 3. 하드웨어 상수 설정
         self.COUNTS_PER_RADIAN = 740.0  
@@ -74,8 +74,8 @@ class RealWelconPDDriver(Node):
             self.get_logger().error(f"CAN Connection Failed: {e}")
             return
 
-        # 6. 하드웨어 초기화 (Node ID 1, 2, 3의 Axis 1, 2 활성화)
-        self.real_axes = [(3, 1), (2, 1), (1, 1), (3, 2)]
+        # 6. 하드웨어 초기화 (Node ID 1, 3의 Axis 1, 2 활성화)
+        self.real_axes = [(3, 1), (3, 2), (1, 1), (1, 2)]
         self.init_hardware()
 
         # 50Hz 제어 루프

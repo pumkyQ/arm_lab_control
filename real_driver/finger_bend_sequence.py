@@ -31,13 +31,14 @@ class FingerBendSequenceController(Node):
         self.K_emf_count = self.K_emf_rad / self.COUNTS_PER_RADIAN            
         self.voltage_limit = 9500.0      # 최대 인가 전압 한계 (mV)
         
-        # 조인트별 하드웨어 정보 매핑 데이터 테이블 (Node 1, 2, 3, 4)
-        # j2의 EXT는 사용자가 업데이트한 -1278.0 값을 반영합니다.
+        # 조인트별 하드웨어 정보 매핑 데이터 테이블
+        # 배선: j1=노드3-1, j2=노드3-2, j3=노드1-1, j4=노드1-2
+        # welcon_keyboard_driver.py 와 동기화된 절대 엔코더 값 반영
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -214.0, 'FLEX': 806.0, 'EXT': -1242.0},
-            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': -1008.0, 'FLEX': -655.0, 'EXT': -1335.0}, 
-            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': 596.0, 'FLEX': 1651.0,  'EXT': -397.0},
-            'j4': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -388.0, 'FLEX': 664.0, 'EXT': -1384.0} 
+            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -1260.0, 'FLEX': -1030.0, 'EXT': -1260.0},
+            'j2': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -1990.0, 'FLEX': -1040.0, 'EXT': -2055.0},
+            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': -1706.0, 'FLEX':  -854.0, 'EXT': -1769.0},
+            'j4': {'NODE_ID': 1, 'AXIS': 2, 'ALIGN':   574.0, 'FLEX':  1626.0, 'EXT':  -422.0}
         }
         
         # 제어 게인 및 불감대 세팅 (조인트별 개별 설정 적용)

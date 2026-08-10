@@ -53,12 +53,12 @@ class StandaloneFingerBendController:
         self.voltage_limit = 9500.0      # 최대 인가 전압 한계 (mV)
 
         # 4개 조인트 (j1, j2, j3, j4) 노드 및 축 매핑
-        # j1: Node 3 Axis 1 | j2: Node 2 Axis 1 | j3: Node 1 Axis 1 | j4: Node 3 Axis 2
+        # j1: Node 3, Axis 1 | j2: Node 3, Axis 2 | j3: Node 1, Axis 1 | j4: Node 1, Axis 2
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -214.0,  'FLEX': 806.0,   'EXT': -1242.0},
-            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': -1008.0, 'FLEX': -655.0,  'EXT': -1335.0}, 
-            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': 596.0,   'FLEX': 1651.0,  'EXT': -397.0},
-            'j4': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -388.0,  'FLEX': 664.0,   'EXT': -1384.0} 
+            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -1260.0, 'FLEX': -1030.0, 'EXT': -1260.0},
+            'j2': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -1990.0, 'FLEX': -1040.0, 'EXT': -2055.0},
+            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': -1706.0, 'FLEX':  -854.0, 'EXT': -1769.0},
+            'j4': {'NODE_ID': 1, 'AXIS': 2, 'ALIGN':   574.0, 'FLEX':  1626.0, 'EXT':  -422.0}
         }
 
         # 조인트별 제어 게인 및 마찰 보상 세팅

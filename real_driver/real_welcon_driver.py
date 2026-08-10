@@ -3,6 +3,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 import sys
@@ -23,24 +24,31 @@ class RealWelconDriver(Node):
     def __init__(self):
         super().__init__('real_welcon_driver')
         
-        # 1. ROS 2 통신 설정
+        # 1. ROS 2 통신 설정 (QoS depth=1 최신 피드백 보장 설정)
+        qos_profile = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE
+        )
+
         # 1.1 Command Subscriber: 컨트롤러의 전압 제어 명령 수집
         self.volt_sub = self.create_subscription(
             Float64MultiArray, 
             '/joint_voltage_cmd', 
             self.voltage_callback, 
-            10
+            qos_profile
         )
         # 1.2 Feedback Publisher: 실시간 엔코더 및 상태 정보 발행
         self.joint_pub = self.create_publisher(
             JointState, 
             '/joint_states_raw', 
-            10
+            qos_profile
         )
         
         # 2. 제어 대상 조인트 및 축 매핑 정보 정의 (j1~j4)
         self.joint_names = ['j1', 'j2', 'j3', 'j4']
-        self.real_axes = [(3, 1), (2, 1), (1, 1), (3, 2)]
+        self.real_axes = [(3, 1), (3, 2), (1, 1), (1, 2)]
+        self.voltage_limit = 10000.0  # 드라이버 안전 전압 한계 (10V / 10000mV)
         
         # 실시간 하드웨어 피드백 상태 보관 변수
         self.current_positions = [0.0] * 4
@@ -116,8 +124,8 @@ class RealWelconDriver(Node):
         if len(msg.data) >= 4:
             for idx, (node_id, axis) in enumerate(self.real_axes):
                 voltage = int(msg.data[idx])
-                # 전압 절대 한계 안전 클리핑 (최대 9500mV)
-                voltage = max(-9500, min(9500, voltage))
+                # 전압 절대 한계 안전 클리핑 (최대 9500mV 동기화)
+                voltage = max(-int(self.voltage_limit), min(int(self.voltage_limit), voltage))
                 self.applied_voltages[idx] = float(voltage)
                 
                 volt_frame = self.protocol.make_q_axis_voltage_mv_sdo(node_id, voltage, axis)

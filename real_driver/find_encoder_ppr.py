@@ -34,9 +34,9 @@ def main():
     # integrated_joint_control.py의 조인트 매핑 정보와 매칭
     JOINT_CONFIG = {
         '1': {'KEY': 'j1', 'NODE_ID': 3, 'AXIS': 1, 'NAME': 'J1 (Node 3, Axis 1)'},
-        '2': {'KEY': 'j2', 'NODE_ID': 2, 'AXIS': 1, 'NAME': 'J2 (Node 2, Axis 1)'}, 
+        '2': {'KEY': 'j2', 'NODE_ID': 3, 'AXIS': 2, 'NAME': 'J2 (Node 3, Axis 2)'}, 
         '3': {'KEY': 'j3', 'NODE_ID': 1, 'AXIS': 1, 'NAME': 'J3 (Node 1, Axis 1)'},
-        '4': {'KEY': 'j4', 'NODE_ID': 3, 'AXIS': 2, 'NAME': 'J4 (Node 3, Axis 2)'} 
+        '4': {'KEY': 'j4', 'NODE_ID': 1, 'AXIS': 2, 'NAME': 'J4 (Node 1, Axis 2)'} 
     }
 
     protocol = Cia402Protocol()

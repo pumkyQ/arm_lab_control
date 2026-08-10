@@ -42,11 +42,12 @@ class KitechPartialSequenceController(Node):
         self.K_emf_count = self.K_emf_rad / self.COUNTS_PER_RADIAN            
         self.voltage_limit = 9500.0      
         
-        # 실측 데이터 반영 (Node 1, 2, 3)
+        # 실측 데이터 반영 (j1:3-1, j2:3-2, j3:1-1, j4:1-2)
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': -980.0, 'FLEX': -651.0, 'EXT': -2014.0},
-            'j2': {'NODE_ID': 2, 'AXIS': 1, 'ALIGN': 510.0,  'FLEX': 1619.0, 'EXT': -290.0}, # 뻑뻑함 -> 0도 고정용
-            'j3': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -337.0, 'FLEX': 824.0,  'EXT': -1313.0} 
+            'j1': {'NODE_ID': 3, 'AXIS': 1, 'ALIGN': -1260.0, 'FLEX': -1030.0, 'EXT': -1260.0},
+            'j2': {'NODE_ID': 3, 'AXIS': 2, 'ALIGN': -1990.0, 'FLEX': -1040.0, 'EXT': -2055.0},
+            'j3': {'NODE_ID': 1, 'AXIS': 1, 'ALIGN': -1706.0, 'FLEX':  -854.0, 'EXT': -1769.0},
+            'j4': {'NODE_ID': 1, 'AXIS': 2, 'ALIGN':   574.0, 'FLEX':  1626.0, 'EXT':  -422.0}
         }
         
         # 제어 게인 및 불감대 세팅 (0.5도)

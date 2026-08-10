@@ -40,10 +40,10 @@ class RawEncoderController:
         # [⚙️ 4개 모터 (조인트) Node & Axis 매핑]
         # ----------------------------------------------------------------------
         self.JOINT_CONFIG = {
-            'j1': {'NODE_ID': 1, 'AXIS': 1},
-            'j2': {'NODE_ID': 1, 'AXIS': 2},
-            'j3': {'NODE_ID': 2, 'AXIS': 1},
-            'j4': {'NODE_ID': 2, 'AXIS': 2},
+            'j1': {'NODE_ID': 3, 'AXIS': 1},
+            'j2': {'NODE_ID': 3, 'AXIS': 2},
+            'j3': {'NODE_ID': 1, 'AXIS': 1},
+            'j4': {'NODE_ID': 1, 'AXIS': 2},
         }
         
         # PD 제어 게인 (단순화를 위해 P, D 게인만 사용, 필요에 따라 튜닝 가능)
