@@ -52,11 +52,11 @@ struct JointConfig {
 JointConfig joints[4] = {
   // j1: Node 3, Axis 1 (ALIGN 원점 -1220.0f, 구동 범위 -1220.0f ~ -990.0f)
   {"j1", 3, 1, -1220.0f, -990.0f, -1220.0f, 350.0f, 15.0f, 0.5f, 300.0f, 2.0f,  1000.0f},
-  // j2: Node 3, Axis 2 (측정한 ALIGN 원점 -1850.0f 반영, 양수 굽힘 방향 -1000.0f)
-  {"j2", 3, 2, -1850.0f, -1000.0f, -1850.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 6.0f, 1000.0f},
-  // j3: Node 2, Axis 1 (바이패스)
-  {"j3", 2, 1, -1852.0f, -2848.0f,  -798.0f, 450.0f, 15.0f, 3.0f, 1500.0f, 1.5f, 1200.0f},
-  // j4: Node 1, Axis 1 (새 모터 측정한 원점 645.0f 반영)
+  // j2: Node 2, Axis 1 (측정한 ALIGN 원점 -1850.0f 반영, 양수 굽힘 방향 -1000.0f)
+  {"j2", 3, 2, -1850.0f, -900.0f, -1915.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 6.0f, 1000.0f},
+  // j3: Node 2, Axis 1 (ALIGN 원점 -1852.0f, 40도 굽힘 -1397.0f)
+  {"j3", 2, 1, -1852.0f, -1000.0f, -1915.0f, 450.0f, 15.0f, 3.0f, 1500.0f, 6.0f, 1200.0f},
+  // j4: Node 3, Axis 2 (새 모터 측정한 원점 645.0f 반영)
   {"j4", 1, 1,  645.0f, 1697.0f,  -351.0f, 350.0f, 15.0f, 1.5f, 1000.0f, 3.0f, 1000.0f}
 };
 
@@ -182,13 +182,12 @@ void enableNodeAxis(uint8_t nodeId, uint8_t axis) {
 }
 
 void initHardware() {
-  Serial.println(F("▶ Welcon 모터 드라이버 (j1, j2, j4) 초기화 진행 중..."));
+  Serial.println(F("▶ Welcon 모터 드라이버 (j1, j2, j3, j4) 초기화 진행 중..."));
   
   sendNmtStart(0);
   delay(100);
 
   for (int i = 0; i < 4; i++) {
-    if (i == 2) continue; // ⚡ 3번 관절 바이패스
     enableNodeAxis(joints[i].nodeId, joints[i].axis);
     delay(20);
   }
@@ -250,7 +249,6 @@ void readJointFeedbacks() {
   bool anyReadSuccess = false;
 
   for (int i = 0; i < 4; i++) {
-    if (i == 2) continue; // ⚡ 3번 관절 바이패스
     uint8_t nodeId = joints[i].nodeId;
     uint16_t posObj = (joints[i].axis == 1) ? 0x6064 : 0x6864;
     uint16_t statObj = (joints[i].axis == 1) ? 0x6041 : 0x6841;
@@ -265,7 +263,7 @@ void readJointFeedbacks() {
       jointStates[i].currentCount = newPos;
 
       if (!receivedFirstFeedback) {
-        jointStates[i].targetCount = joints[i].alignCount; // ⚡ 조인트 2번 -1008.0f 정렬 위치로 목표치 고정
+        jointStates[i].targetCount = joints[i].alignCount; 
       }
     }
 
@@ -295,11 +293,9 @@ void readJointFeedbacks() {
   }
 }
 
-// 각 관절에 전압 명령(mV) SDO 전송 (j3 완전 차단)
+// 각 관절에 전압 명령(mV) SDO 전송
 void sendVoltages(float voltages[4]) {
-  voltages[2] = 0.0f; // ⚡ 3번 관절 전압 0mV 차단
   for (int i = 0; i < 4; i++) {
-    if (i == 2) continue; // ⚡ 3번 관절 전송 안함
     uint8_t nodeId = joints[i].nodeId;
     uint16_t voltObj = (joints[i].axis == 1) ? 0x2103 : 0x2903;
     int32_t voltInt = (int32_t)constrain(round(voltages[i]), -VOLTAGE_LIMIT, VOLTAGE_LIMIT);
@@ -370,13 +366,13 @@ void handleInputs() {
     float j1Ratio = filteredJoyJ1Ratio;
     const float deadzoneY = 40.0f;
 
-    if (joyY > (544 + deadzoneY)) {
-      // 아래로 밀 때: -1220 count (0°) -> -990 count (+20.21° / +방향 이동)
-      j1Ratio = mapFloat((float)joyY, 544.0f, 1023.0f, 0.0f, 1.0f);
-    } else if (joyY < (480 - deadzoneY)) {
-      // 위로 밀 때: 원점 (-1220 count) 방향으로 서서히 복귀
-      float upRatio = mapFloat((float)joyY, 480.0f, 0.0f, 0.0f, 1.0f);
-      j1Ratio = max(0.0f, filteredJoyJ1Ratio - upRatio);
+    if (joyY < (480 - deadzoneY)) {
+      // 위로 밀 때: -1220 count (0°) -> -990 count (+20.21° / +방향 이동)
+      j1Ratio = mapFloat((float)joyY, 480.0f, 0.0f, 0.0f, 1.0f);
+    } else if (joyY > (544 + deadzoneY)) {
+      // 아래로 밀 때: 원점 (-1220 count) 방향으로 서서히 복귀
+      float downRatio = mapFloat((float)joyY, 544.0f, 1023.0f, 0.0f, 1.0f);
+      j1Ratio = max(0.0f, filteredJoyJ1Ratio - downRatio);
     }
 
     // LPF 필터 강도를 높여 조인트 1번 반응을 부드럽게 조정
@@ -401,11 +397,12 @@ void handleInputs() {
     // LPF 필터 강도를 높여 손가락 굽힘/펴짐 반응을 부드럽게 조정
     filteredJoyFlexRatio = (0.15f * flexRatio) + (0.85f * filteredJoyFlexRatio);
 
-    float targetJ2 = 40.0f * filteredJoyFlexRatio; // ⚡ 조인트 2번 40도 굽힘 적용
+    const float targetJ2 = 40.0f * filteredJoyFlexRatio;
+    float targetJ3 = 40.0f * filteredJoyFlexRatio; // ⚡ 조인트 3번 40도 굽힘 적용
     float targetJ4 = 70.0f * filteredJoyFlexRatio;
 
     updateTargetDegree(1, targetJ2);
-    updateTargetDegree(2, 0.0f); // j3 바이패스
+    updateTargetDegree(2, targetJ3);
     updateTargetDegree(3, targetJ4);
   }
 
@@ -432,7 +429,6 @@ void handleInputs() {
 // =========================================================================
 void setup() {
   Serial.begin(115200);
-  // ⚡ 노트북 독립 실행을 위해 while(!Serial) 대기 구문 제거! ⚡
 
   pinMode(JOY_SW_PIN,    INPUT_PULLUP);
   pinMode(SW_ALIGN_PIN,  INPUT_PULLUP);
@@ -463,11 +459,11 @@ void setup() {
   initHardware();
 
   Serial.println(F("▶ 조작 안내:"));
-  Serial.println(F("  [조이스틱  상/하] ↕️ : Joint 1 각도 실시간 선형 조종 (+70° <-> -70°)"));
-  Serial.println(F("  [조이스틱  좌/우] ↔️ : 조인트 2, 4번 굽힘/펴짐 실시간 선형 조종"));
+  Serial.println(F("  [조이스틱  상/하] ↕️ : Joint 1 각도 실시간 선형 조종 (+방향 -990count 이동)"));
+  Serial.println(F("  [조이스틱  좌/우] ↔️ : 조인트 2, 3, 4번 굽힘/펴짐 실시간 선형 조종"));
   Serial.println(F("  [스위치 1 (D5)]   🔘 : 관절 정렬 (0° 복귀)"));
-  Serial.println(F("  [스위치 2 (D6)]   🔘 : 조인트 2, 4번 빠른 굽히기 시퀀스"));
-  Serial.println(F("  [스위치 3 (D7)]   🔘 : 조인트 1번 (±70° 3회 왕복)"));
+  Serial.println(F("  [스위치 2 (D6)]   🔘 : 조인트 2, 3, 4번 빠른 굽히기 시퀀스"));
+  Serial.println(F("  [스위치 3 (D7)]   🔘 : 조인트 1번 (±20° 3회 왕복)"));
 }
 
 void loop() {
@@ -499,12 +495,12 @@ void loop() {
       if (currentState == STANDBY || currentState == HOLD) {
         currentState = BEND_SEQ;
         stateStartTime = millis();
-        Serial.println(F("\n🔥 [시퀀스 시작] 조인트 2, 4번 굽히기 시퀀스 시작"));
+        Serial.println(F("\n🔥 [시퀀스 시작] 조인트 2, 3, 4번 굽히기 시퀀스 시작"));
       }
     } else if (cmd == 'e' || cmd == 'E') {
       currentState = WIGGLE_J1;
       stateStartTime = millis();
-      Serial.println(F("\n↔️ [J1 왕복] 조인트 1번 (±70°) 3회 왕복 시작"));
+      Serial.println(F("\n↔️ [J1 왕복] 조인트 1번 (±20°) 3회 왕복 시작"));
     } else if (cmd == 'r' || cmd == 'R') {
       currentState = ALIGN_ONLY;
       stateStartTime = millis();
@@ -526,20 +522,23 @@ void loop() {
       updateTargetDegree(1, 0.0f);
       updateTargetDegree(2, 0.0f);
       updateTargetDegree(3, 0.0f);
-      if (elapsedTime > 1.0f) {
+      filteredJoyJ1Ratio = 0.0f;
+      filteredJoyFlexRatio = 0.0f;
+      if (elapsedTime > 0.5f) {
         currentState = HOLD;
+        Serial.println(F("\n✅ [D5 정렬 완료] 모든 관절 0° 정렬 원점 위치 완료."));
       }
       break;
 
     case BEND_SEQ:
       updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 0.0f);
-      updateTargetDegree(2, 0.0f);
-      updateTargetDegree(3, 0.0f);
+      updateTargetDegree(1, 40.0f);
+      updateTargetDegree(2, 40.0f);
+      updateTargetDegree(3, 70.0f);
+      filteredJoyFlexRatio = 1.0f; // ⚡ 굽혀진 포즈(1.0) 즉시 반영
       if (elapsedTime > 0.5f) {
-        currentState = MOVE_J2;
-        stateStartTime = millis();
-        Serial.println(F("\n➡️ [1단계] 조인트 2 구동 시작 (0° ➡️ 35°)"));
+        currentState = HOLD;
+        Serial.println(F("\n✅ [D6 굽힘 완료] j2=40°, j3=40°, j4=70° 굽힌 상태 고정 완료 (원점 복귀 없음)."));
       }
       break;
 
@@ -549,8 +548,7 @@ void loop() {
       float totalWiggleTime = wigglePeriod * numCycles;
 
       if (elapsedTime <= totalWiggleTime) {
-        // -1220 count (0°) 에서 -990 count (+20.21°) 사이 범위 내 왕복
-        float maxWiggleDeg = 20.21f;
+        float maxWiggleDeg = 20.0f;
         float targetJ1Deg = (maxWiggleDeg / 2.0f) * (1.0f - cos(2.0f * PI * (1.0f / wigglePeriod) * elapsedTime));
         updateTargetDegree(0, targetJ1Deg);
         updateTargetDegree(1, 0.0f);
@@ -562,38 +560,10 @@ void loop() {
         updateTargetDegree(2, 0.0f);
         updateTargetDegree(3, 0.0f);
         currentState = HOLD;
-        Serial.println(F("\n✅ [J1 왕복 완료] 조인트 1번 (-1220 ~ -990 count) 3회 왕복 구동 완료."));
+        Serial.println(F("\n✅ [J1 왕복 완료] 조인트 1번 3회 왕복 구동 완료."));
       }
       break;
     }
-
-    case MOVE_J2:
-      updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 40.0f);
-      updateTargetDegree(2, 0.0f);
-      updateTargetDegree(3, 0.0f);
-      if (elapsedTime > 0.5f) {
-        currentState = MOVE_J4;
-        stateStartTime = millis();
-        Serial.println(F("\n➡️ [2단계] 조인트 4 구동 시작 (0° ➡️ 70°) (3번 바이패스)"));
-      }
-      break;
-
-    case MOVE_J3: // 바이패스
-      currentState = MOVE_J4;
-      stateStartTime = millis();
-      break;
-
-    case MOVE_J4:
-      updateTargetDegree(0, 0.0f);
-      updateTargetDegree(1, 40.0f);
-      updateTargetDegree(2, 0.0f);
-      updateTargetDegree(3, 70.0f);
-      if (elapsedTime > 0.5f) {
-        currentState = HOLD;
-        Serial.println(F("\n✅ [시퀀스 완료] j2=40°, j4=70° 빠른 파지 포즈 수렴 완료."));
-      }
-      break;
 
     case HOLD:
       break;
@@ -607,11 +577,6 @@ void loop() {
   float calculatedVoltages[4];
 
   for (int i = 0; i < 4; i++) {
-    if (i == 2) {
-      calculatedVoltages[2] = 0.0f; // ⚡ 3번 바이패스
-      continue;
-    }
-
     float errorCount = jointStates[i].targetCount - jointStates[i].currentCount;
 
     float filteredVel = (LPF_ALPHA * jointStates[i].velocityRaw) + ((1.0f - LPF_ALPHA) * jointStates[i].filteredVelocityOld);
@@ -650,7 +615,7 @@ void loop() {
       jointStates[i].errorIntegral = 0.0f;
     }
 
-    calculatedVoltages[i] = totalV;
+    calculatedVoltages[i] = constrain(totalV, -VOLTAGE_LIMIT, VOLTAGE_LIMIT);
   }
 
   // 6. 모터 드라이버에 제어 전압 인가
@@ -660,14 +625,17 @@ void loop() {
   if (now - lastLogTime >= 200) {
     lastLogTime = now;
     Serial.print(F("⚙️ J1:"));
-    Serial.print((int)jointStates[0].currentCount); Serial.print(F("/")); Serial.print((int)jointStates[0].targetCount);
+    Serial.print((int32_t)jointStates[0].currentCount); Serial.print(F("/")); Serial.print((int32_t)jointStates[0].targetCount);
     Serial.print(F(" | J2:"));
-    Serial.print((int)jointStates[1].currentCount); Serial.print(F("/")); Serial.print((int)jointStates[1].targetCount);
+    Serial.print((int32_t)jointStates[1].currentCount); Serial.print(F("/")); Serial.print((int32_t)jointStates[1].targetCount);
+    Serial.print(F(" | J3:"));
+    Serial.print((int32_t)jointStates[2].currentCount); Serial.print(F("/")); Serial.print((int32_t)jointStates[2].targetCount);
     Serial.print(F(" | J4:"));
-    Serial.print((int)jointStates[3].currentCount); Serial.print(F("/")); Serial.print((int)jointStates[3].targetCount);
+    Serial.print((int32_t)jointStates[3].currentCount); Serial.print(F("/")); Serial.print((int32_t)jointStates[3].targetCount);
     Serial.print(F(" | Volts:["));
-    Serial.print((int)calculatedVoltages[0]); Serial.print(F(","));
-    Serial.print((int)calculatedVoltages[1]); Serial.print(F(",0,"));
-    Serial.print((int)calculatedVoltages[3]); Serial.println(F("]"));
+    Serial.print((int32_t)calculatedVoltages[0]); Serial.print(F(","));
+    Serial.print((int32_t)calculatedVoltages[1]); Serial.print(F(","));
+    Serial.print((int32_t)calculatedVoltages[2]); Serial.print(F(","));
+    Serial.print((int32_t)calculatedVoltages[3]); Serial.println(F("]"));
   }
 }
