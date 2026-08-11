@@ -153,7 +153,8 @@ class WelconSimpleKeyboardController(Node):
         print("=" * 70)
         print(" 🎯 KITECH 손가락 관절 키보드 간소화 컨트롤러")
         print("=" * 70)
-        print(" 🔘 [s] 키 또는 [스페이스바] : 손가락 굽히기 (J2=40°, J3=40°, J4=40°)")
+        print(" 🔘 [f] 키                 : 조인트 1번(J1) 20° 독립 구동")
+        print(" 🔘 [s] 키 또는 [스페이스바] : 조인트 2, 3, 4번 20° 굽히기 (J2=20°, J3=20°, J4=20°)")
         print(" 🔘 [r] 키 또는 [ESC]       : 0° 원점 복귀 / 펴기 (모든 조인트 0°)")
         print(" 🛑 [q] 키                 : 전압 0mV 인가 및 프로그램 종료")
         print("=" * 70 + "\n")
@@ -172,7 +173,12 @@ class WelconSimpleKeyboardController(Node):
                 # 2. 키 입력 처리
                 key = key_reader.get_key(timeout=0.0)
                 if key is not None:
-                    if key in ['s', 'SPACE']:
+                    if key == 'f':
+                        self.current_mode = "MOVE_J1"
+                        self.set_target_degrees(20.0, 0.0, 0.0, 0.0)
+                        print("\n☝️ [J1 구동 명령] J1=20°, J2=0°, J3=0°, J4=0° 구동 시작")
+
+                    elif key in ['s', 'SPACE']:
                         self.current_mode = "BEND"
                         self.set_target_degrees(0.0, 20.0, 20.0, 20.0)
                         print("\n🔥 [굽히기 명령] J2=20°, J3=20°, J4=20° 굽힘 시작")
