@@ -87,12 +87,12 @@ class WelconSimpleKeyboardController(Node):
             'j4': {'ALIGN':   574.0, 'FLEX':  1626.0, 'EXT':  -422.0}
         }
 
-        # PID 게인 및 마찰 보상 설정 (데드존 2.0도로 정밀화)
+        # PID 게인 및 마찰 보상 파라미터 (MOTOR_DIR: 모터 전압 방향 부호 계수)
         self.GAIN_CONFIG = {
-            'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 300.0,  'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0},
-            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0},
-            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 3.0, 'Ki_limit': 1500.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1200.0},
-            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0}
+            'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 300.0,  'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0},
+            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0},
+            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 3.0, 'Ki_limit': 1500.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1200.0, 'MOTOR_DIR': 1.0},
+            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0}
         }
 
         self.LOOP_RATE = 50.0  # 50Hz (20ms)
@@ -174,8 +174,8 @@ class WelconSimpleKeyboardController(Node):
                 if key is not None:
                     if key in ['s', 'SPACE']:
                         self.current_mode = "BEND"
-                        self.set_target_degrees(0.0, 40.0, 40.0, 40.0)
-                        print("\n🔥 [굽히기 명령] J2=40°, J3=40°, J4=40° 굽힘 시작")
+                        self.set_target_degrees(0.0, 20.0, 20.0, 20.0)
+                        print("\n🔥 [굽히기 명령] J2=20°, J3=20°, J4=20° 굽힘 시작")
 
                     elif key in ['r', 'ESC']:
                         self.current_mode = "ALIGN"
@@ -231,7 +231,7 @@ class WelconSimpleKeyboardController(Node):
                             v_i = 0.0
 
                         v_frict = np.tanh(error_count / (deadzone_thresh * 2.0)) * gc['FRICT_COMP']
-                        total_v = v_p + v_i + v_d + v_emf + v_frict
+                        total_v = (v_p + v_i + v_d + v_emf + v_frict) * gc.get('MOTOR_DIR', 1.0)
 
                     # 소프트웨어 이동 제한 한계 가드
                     min_lim = min(cfg['FLEX'], cfg['EXT'])
