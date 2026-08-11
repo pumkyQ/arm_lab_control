@@ -90,9 +90,9 @@ class WelconSimpleKeyboardController(Node):
         # PID 게인 및 마찰 보상 파라미터 (MOTOR_DIR: 모터 전압 방향 부호 계수)
         self.GAIN_CONFIG = {
             'j1': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 0.5, 'Ki_limit': 300.0,  'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0},
-            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0},
-            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 3.0, 'Ki_limit': 1500.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1200.0, 'MOTOR_DIR': 1.0},
-            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 2.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0}
+            'j2': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 6.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0},
+            'j3': {'Kp': 450.0, 'Kd': 15.0, 'Ki': 3.0, 'Ki_limit': 1500.0, 'DEADZONE_DEG': 6.0, 'FRICT_COMP': 1200.0, 'MOTOR_DIR': 1.0},
+            'j4': {'Kp': 350.0, 'Kd': 15.0, 'Ki': 1.5, 'Ki_limit': 1000.0, 'DEADZONE_DEG': 6.0, 'FRICT_COMP': 1000.0, 'MOTOR_DIR': 1.0}
         }
 
         self.LOOP_RATE = 50.0  # 50Hz (20ms)
