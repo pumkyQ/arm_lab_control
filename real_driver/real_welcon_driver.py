@@ -92,29 +92,31 @@ class RealWelconDriver(Node):
             return
             
         self.get_logger().info("▶ Initializing Welcon Hardware (Joint 1, 2, 3, 4)...")
-        # NMT Start (전체 노드 일괄 시작)
-        nmt_frame = self.protocol.make_nmt_start(0)
-        self.bus.send(nmt_frame)
-        time.sleep(0.1)
-        
-        for node_id, axis in self.real_axes:
-            # SDO 모드 쓰기: -11 (Voltage Control Mode)
-            mode_frame = self.protocol.make_axis_mode_sdo(node_id, axis, -11)
-            self.bus.send(mode_frame)
-            time.sleep(0.02)
+        try:
+            # NMT Start (전체 노드 일괄 시작)
+            nmt_frame = self.protocol.make_nmt_start(0)
+            self.bus.send(nmt_frame)
+            time.sleep(0.1)
             
-            # State Machine 기동 상태 단계를 순차 입력
-            for label, ctrl in (
-                ("fault reset", Cia402Controlword.FAULT_RESET),
-                ("shutdown", Cia402Controlword.SHUTDOWN),
-                ("switch on", Cia402Controlword.SWITCH_ON),
-                ("enable operation", Cia402Controlword.ENABLE_OPERATION)
-            ):
-                frame = self.protocol.make_axis_controlword_sdo(node_id, axis, ctrl)
-                self.bus.send(frame)
+            for node_id, axis in self.real_axes:
+                # SDO 모드 쓰기: -11 (Voltage Control Mode)
+                mode_frame = self.protocol.make_axis_mode_sdo(node_id, axis, -11)
+                self.bus.send(mode_frame)
                 time.sleep(0.02)
                 
-        self.get_logger().info("🔥 Joint 1, 2, 3, 4 Active axes enabled in Voltage Mode!")
+                # State Machine 기동 상태 단계를 순차 입력
+                for label, ctrl in (
+                    ("fault reset", Cia402Controlword.FAULT_RESET),
+                    ("shutdown", Cia402Controlword.SHUTDOWN),
+                    ("switch on", Cia402Controlword.SWITCH_ON),
+                    ("enable operation", Cia402Controlword.ENABLE_OPERATION)
+                ):
+                    frame = self.protocol.make_axis_controlword_sdo(node_id, axis, ctrl)
+                    self.bus.send(frame)
+                    time.sleep(0.02)
+            self.get_logger().info("🔥 Joint 1, 2, 3, 4 Active axes enabled in Voltage Mode!")
+        except OSError as e:
+            self.get_logger().error(f"❌ CAN Hardware Init Error: {e}. Check Welcon power and CAN cabling!")
 
     def voltage_callback(self, msg: Float64MultiArray):
         """컨트롤러 노드로부터 받은 전압 제어 신호를 모터 드라이버 SDO 명령으로 즉시 송신"""
@@ -124,12 +126,16 @@ class RealWelconDriver(Node):
         if len(msg.data) >= 4:
             for idx, (node_id, axis) in enumerate(self.real_axes):
                 voltage = int(msg.data[idx])
-                # 전압 절대 한계 안전 클리핑 (최대 9500mV 동기화)
+                # 전압 절대 한계 안전 클리핑
                 voltage = max(-int(self.voltage_limit), min(int(self.voltage_limit), voltage))
                 self.applied_voltages[idx] = float(voltage)
                 
                 volt_frame = self.protocol.make_q_axis_voltage_mv_sdo(node_id, voltage, axis)
-                self.bus.send(volt_frame)
+                try:
+                    self.bus.send(volt_frame)
+                except BlockingIOError:
+                    # CAN 송신 버퍼 일시 포화(EAGAIN) → 이번 주기 전압 명령 스킵
+                    pass
 
     def feedback_loop(self):
         """50Hz 주기로 CAN 버스로부터 현재 위치/속도/상태를 폴링하여 ROS 2 토픽으로 전파"""
@@ -137,10 +143,14 @@ class RealWelconDriver(Node):
             return
 
         # 1. 모든 노드의 SDO 읽기 요청 송신
+        # EAGAIN(BlockingIOError): CAN 송신 버퍼 일시 포화 시 해당 읽기 요청 스킵
         for (node_id, axis), maps in self.sdo_map.items():
-            self.bus.send(self.protocol.make_sdo_read(node_id, maps['pos']))
-            self.bus.send(self.protocol.make_sdo_read(node_id, maps['vel']))
-            self.bus.send(self.protocol.make_sdo_read(node_id, maps['status']))
+            try:
+                self.bus.send(self.protocol.make_sdo_read(node_id, maps['pos']))
+                self.bus.send(self.protocol.make_sdo_read(node_id, maps['vel']))
+                self.bus.send(self.protocol.make_sdo_read(node_id, maps['status']))
+            except BlockingIOError:
+                pass  # 다음 50Hz 주기에 재시도
 
         # 2. CAN 버스 버퍼 폴링 (최대 8ms 동안 수신 응답 분석)
         timeout_end = time.monotonic() + 0.008

@@ -35,13 +35,13 @@ except ModuleNotFoundError as e:
 
 
 # =========================================================================
-# ⚙️ 4개 관절 노드 및 축 정보 정의 (j1 ~ j4)
+# ⚙️ 4개 관절 노드 및 축 정보 정의 (최신 배선 반영)
 # =========================================================================
 JOINTS = [
-    {"name": "j1 (Node 1, Axis 1)", "node_id": 1, "axis": 1},
-    {"name": "j2 (Node 1, Axis 2)", "node_id": 1, "axis": 2},
-    {"name": "j3 (Node 3, Axis 1)", "node_id": 3, "axis": 1},
-    {"name": "j4 (Node 3, Axis 2)", "node_id": 3, "axis": 2},
+    {"label": "조인트 1", "node_axis": "Node 3, Axis 1", "node_id": 3, "axis": 1},
+    {"label": "조인트 2", "node_axis": "Node 3, Axis 2", "node_id": 3, "axis": 2},
+    {"label": "조인트 3", "node_axis": "Node 1, Axis 1", "node_id": 1, "axis": 1},
+    {"label": "조인트 4", "node_axis": "Node 1, Axis 2", "node_id": 1, "axis": 2},
 ]
 
 CAN_CHANNEL  = "can0"
@@ -75,22 +75,25 @@ def parse_sdo_int32(data: bytes, index: int, subindex: int):
 def read_all_encoders(bus, protocol: Cia402Protocol):
     """
     4개 관절에 SDO Read 요청 → 응답 수집 → 카운트 반환
-    반환: {joint_name: count or None}
+    반환: {label: count or None}
     """
     # 위치 SDO 오브젝트 (axis1=0x6064, axis2=0x6864)
     pos_objects = {}
     for j in JOINTS:
         idx = 0x6064 if j["axis"] == 1 else 0x6864
-        pos_objects[j["name"]] = (j["node_id"], idx, 0x00)
+        pos_objects[j["label"]] = (j["node_id"], idx, 0x00)
 
     # 일괄 요청 전송 (SDO 충돌 방지를 위해 300µs 간격)
-    for jname, (nid, idx, sub) in pos_objects.items():
+    for jlabel, (nid, idx, sub) in pos_objects.items():
         obj = Cia402Object(idx, sub)
-        bus.send(protocol.make_sdo_read(nid, obj))
+        try:
+            bus.send(protocol.make_sdo_read(nid, obj))
+        except BlockingIOError:
+            pass
         time.sleep(0.0003)
 
     # 응답 수집 (최대 SDO_TIMEOUT 동안)
-    results = {j["name"]: None for j in JOINTS}
+    results = {j["label"]: None for j in JOINTS}
     deadline = time.monotonic() + SDO_TIMEOUT
 
     while time.monotonic() < deadline:
@@ -101,23 +104,23 @@ def read_all_encoders(bus, protocol: Cia402Protocol):
         if not (0x580 <= msg.can_id <= 0x5FF):
             continue
         resp_node = msg.can_id - 0x580
-        for jname, (nid, idx, sub) in pos_objects.items():
+        for jlabel, (nid, idx, sub) in pos_objects.items():
             if resp_node == nid:
                 val = parse_sdo_int32(msg.data, idx, sub)
                 if val is not None:
-                    results[jname] = val
+                    results[jlabel] = val
 
     return results
 
 
 def main():
-    print("=" * 65)
-    print(" 🎯 Welcon 4개 관절 (j1~j4) 실시간 엔코더 카운트 모니터링")
-    print("=" * 65)
+    print("=" * 75)
+    print(" 🎯 Welcon 4개 관절 실시간 엔코더 카운트 모니터링 (손으로 움직여 확인)")
+    print("=" * 75)
     print(f"  CAN 채널 : {CAN_CHANNEL} (1Mbps)")
     print(f"  읽기 주기 : {LOOP_HZ}Hz  |  출력 주기 : {int(LOG_INTERVAL * 1000)}ms")
     print("  종료     : Ctrl+C")
-    print("=" * 65 + "\n")
+    print("=" * 75 + "\n")
 
     protocol = Cia402Protocol()
 
@@ -128,14 +131,14 @@ def main():
             # NMT Start (전체 노드 개시)
             bus.send(protocol.make_nmt_start(0))
             time.sleep(0.1)
-            print("▶ 실시간 엔코더 출력 모니터링을 시작합니다...\n")
+            print("▶ 엔코더 모니터링을 시작합니다. 손으로 관절을 흔들어 값이 변하는지 확인하세요!\n")
 
             last_nmt_time  = time.monotonic()
             last_loop_time = time.monotonic()
             last_log_time  = time.monotonic()
             dt = 1.0 / LOOP_HZ
 
-            encoder_counts = {j["name"]: None for j in JOINTS}
+            encoder_counts = {j["label"]: None for j in JOINTS}
 
             while True:
                 now = time.monotonic()
@@ -143,27 +146,27 @@ def main():
                 # 1초 주기 NMT Operational 유지
                 if now - last_nmt_time >= NMT_INTERVAL:
                     last_nmt_time = now
-                    bus.send(protocol.make_nmt_start(0))
+                    try:
+                        bus.send(protocol.make_nmt_start(0))
+                    except BlockingIOError:
+                        pass
 
                 # 50Hz 주기로 엔코더 읽기
                 if now - last_loop_time >= dt:
                     last_loop_time = now
                     encoder_counts = read_all_encoders(bus, protocol)
 
-                # 100ms 간격으로 터미널 출력
+                # 100ms 간격으로 터미널 한 줄 출력
                 if now - last_log_time >= LOG_INTERVAL:
                     last_log_time = now
 
                     parts = []
-                    for i, j in enumerate(JOINTS):
-                        val = encoder_counts.get(j["name"])
-                        label = f"J{i + 1}"
-                        if val is not None:
-                            parts.append(f"{label}: {val:6d} cnt")
-                        else:
-                            parts.append(f"{label}:  OFFLINE")
+                    for j in JOINTS:
+                        val = encoder_counts.get(j["label"])
+                        val_str = f"{val:6d}" if val is not None else "OFFLINE"
+                        parts.append(f"{j['label']} | {j['node_axis']} | 엔코더 값: {val_str}")
 
-                    sys.stdout.write("\r📍 [ENCODER]  " + "  |  ".join(parts) + "    ")
+                    sys.stdout.write("\r📍 " + "  //  ".join(parts) + "  ")
                     sys.stdout.flush()
 
                 # 루프 타이밍 유지
